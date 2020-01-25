@@ -1,4 +1,10 @@
+use std::ops::{Deref, DerefMut};
 use std::ptr::{NonNull, null_mut};
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering::Acquire;
+
+use parking_lot::lock_api::RawMutex as _;
+use parking_lot::RawMutex;
 
 use crate::task::Task;
 
@@ -92,4 +98,61 @@ impl TaskList {
     }
 }
 
-pub(crate) struct SyncTaskList {}
+/// A thread safe task list. It is protected by a mutex. Since the critical section is small
+/// (usually involves only two memory stores), and no memory allocation is needed, a fast
+/// `parking_lot::RawMutex` is enough and there is no need for lock free queues which usually
+/// evolve complicate memory management and provide less features (e.g. they usually provides either
+/// FIFO push or LIFO push, while here both FIFO push and LIFO push are needed).
+pub(crate) struct SyncTaskList {
+    /// Use `RawMutex` to optimize the `is_empty` method.
+    raw_mutex: RawMutex,
+    /// The mutex protected task list.
+    inner: TaskList,
+}
+
+unsafe impl Sync for SyncTaskList {}
+
+impl SyncTaskList {
+    /// Lock the task list.
+    #[inline]
+    pub fn lock(&self) -> SyncTaskListGuard {
+        self.raw_mutex.lock();
+        SyncTaskListGuard(&self)
+    }
+
+    /// Try lock the task list.
+    #[inline]
+    pub fn try_lock(&self) -> Option<SyncTaskListGuard> {
+        if self.raw_mutex.try_lock() { Some(SyncTaskListGuard(&self)) } else { None }
+    }
+
+    /// A hint which might be out-date for whether the task list is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        let head_ref: &*mut Task = &(self.inner.head);
+        let head_ptr: *const (*mut Task) = head_ref as *const (*mut Task);
+        let head_atomic_ptr: *const AtomicPtr<Task> = head_ptr as *const AtomicPtr<Task>;
+        unsafe { (*head_atomic_ptr).load(Acquire).is_null() }
+    }
+}
+
+/// Guard for locked `SyncTaskList`.
+pub(crate) struct SyncTaskListGuard<'a>(&'a SyncTaskList);
+
+impl<'a> Deref for SyncTaskListGuard<'a> {
+    type Target = TaskList;
+
+    fn deref(&self) -> &Self::Target { &self.0.inner }
+}
+
+impl<'a> DerefMut for SyncTaskListGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *(&self.0.inner as *const TaskList as *mut TaskList) }
+    }
+}
+
+impl<'a> Drop for SyncTaskListGuard<'a> {
+    fn drop(&mut self) {
+        self.0.raw_mutex.unlock();
+    }
+}
