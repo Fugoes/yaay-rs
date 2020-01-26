@@ -214,6 +214,11 @@ impl Epoch {
     pub(crate) fn active_count(status: u32) -> u32 {
         status & ACTIVE_COUNT_MASK
     }
+
+    #[inline]
+    pub(crate) fn epoch(status: u32) -> u32 {
+        status >> ACTIVE_COUNT_BITS
+    }
 }
 
 impl Epoch {
