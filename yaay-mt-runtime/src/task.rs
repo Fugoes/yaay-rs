@@ -82,6 +82,12 @@ impl Task {
         }
     }
 
+    /// Get current reference count.
+    #[inline]
+    pub(crate) fn rc(task: NonNull<Task>) -> usize {
+        unsafe { task.as_ref().rc.load(Relaxed) }
+    }
+
     /// Dispatched to `TaskVTable.fn_drop_in_place`.
     #[inline]
     pub(crate) fn drop_in_place(task: NonNull<Task>) {

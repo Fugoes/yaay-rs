@@ -161,8 +161,6 @@ unsafe impl Sync for Epoch {}
 const ACTIVE_COUNT_BITS: u32 = 9;
 /// The mask to get the active count.
 const ACTIVE_COUNT_MASK: u32 = !(((!(0 as u32)) >> ACTIVE_COUNT_BITS) << ACTIVE_COUNT_BITS);
-/// 23 bits unsigned integer for epoch number.
-const EPOCH_BITS: u32 = 32 - ACTIVE_COUNT_BITS;
 /// The '1' for epoch
 const EPOCH: u32 = 1 << ACTIVE_COUNT_BITS;
 /// Max safe duration without epoch counter overflow.
@@ -172,7 +170,8 @@ impl Epoch {
     /// Init with `n_threads` in active state. If `n_threads` is too large, panic.
     #[inline]
     pub(crate) fn new(n_threads: u32) -> Self {
-        Self(AtomicU32::new(0))
+        assert!(n_threads < EPOCH);
+        Self(AtomicU32::new(n_threads))
     }
 
     #[inline]

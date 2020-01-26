@@ -1,7 +1,10 @@
 use std::cell::Cell;
+use std::future::Future;
+use std::pin::Pin;
 use std::ptr::{NonNull, null_mut};
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::{AtomicBool, AtomicPtr};
 use std::sync::atomic::Ordering::Relaxed;
+use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::epoch::Epoch;
@@ -35,6 +38,8 @@ struct Private {
     /// Store locally generated defer tasks. When done polling a task, the worker thread should
     /// check its `defer_list`, if it is not empty, push them in batch to local queue.
     defer_list: Cell<TaskList>,
+    /// Shutdown indicator.
+    shutdown: AtomicBool,
 }
 
 impl Worker {
@@ -43,11 +48,16 @@ impl Worker {
         let task_list = SyncTaskList::new();
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
         let defer_list = Cell::new(TaskList::new());
+        let shutdown = AtomicBool::new(false);
 
         let shared = Shared { task_list };
-        let private = Private { seed, n_workers, epoch, other_workers, defer_list };
+        let private = Private { seed, n_workers, epoch, other_workers, defer_list, shutdown };
 
         Self { shared, private }
+    }
+
+    pub(crate) fn set(worker: *mut Worker) {
+        WORKER.with(|x| x.store(worker, Relaxed));
     }
 
     /// Get mutable reference to this thread's worker.
@@ -63,6 +73,7 @@ impl Worker {
                 match task {
                     Some(task) => {
                         self.poll_task(task);
+                        if self.private.shutdown.load(Relaxed) { return; };
                     }
                     None => {
                         break 'local;
@@ -115,6 +126,7 @@ impl Worker {
             };
             self.get_epoch().set_active();
             self.poll_task(task);
+            if self.private.shutdown.load(Relaxed) { return; };
         }
     }
 
@@ -124,7 +136,13 @@ impl Worker {
     }
 
     #[inline]
-    fn poll_task(&mut self, task: NonNull<Task>) {}
+    fn poll_task(&mut self, task: NonNull<Task>) {
+        let _ = Task::poll(task, self);
+        if !self.private.defer_list.get_mut().is_empty() {
+            let tasks = self.private.defer_list.get_mut().pop_all();
+            self.shared.task_list.lock().push_front_batch(tasks);
+        };
+    }
 
     #[inline]
     pub(crate) fn get_epoch<'a>(&self) -> &'a Epoch {
@@ -139,7 +157,38 @@ impl Worker {
         let seed = seed ^ (seed << 5);
         self.private.seed = seed;
     }
+
+    #[inline]
+    pub(crate) fn defer(&mut self, task: NonNull<Task>) {
+        self.private.defer_list.get_mut().push_front(task);
+    }
 }
+
+unsafe impl Send for Worker {}
+
+pub struct Shutdown();
+
+impl Future for Shutdown {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let worker = Worker::get();
+        worker.private.shutdown.store(true, Relaxed);
+        for other_worker in worker.private.other_workers.iter() {
+            unsafe {
+                if !(**other_worker).private.shutdown.load(Relaxed) {
+                    let task = Task::new(Shutdown());
+                    let mut guard = (**other_worker).shared.task_list.lock();
+                    guard.push_front(task);
+                    drop(guard);
+                };
+            };
+        };
+        Poll::Ready(())
+    }
+}
+
+unsafe impl Send for Shutdown {}
 
 thread_local! {
 pub(crate) static WORKER: AtomicPtr<Worker> = AtomicPtr::new(null_mut());

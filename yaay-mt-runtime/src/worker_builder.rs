@@ -1,9 +1,11 @@
-use std::ptr::null_mut;
+use std::ptr::{NonNull, null_mut};
 
 use parking_lot::{Condvar, Mutex};
 
 use crate::epoch::Epoch;
-use crate::mem::do_alloc;
+use crate::mem::{do_alloc, do_dealloc};
+use crate::task::Task;
+use crate::task_list::TaskList;
 use crate::worker::Worker;
 
 /// Manage workers construction and destruction.
@@ -13,6 +15,8 @@ pub(crate) struct WorkerBuilder {
     n_not_built_cond: Condvar,
     n_not_built: Mutex<u32>,
 }
+
+unsafe impl Send for WorkerBuilder {}
 
 unsafe impl Sync for WorkerBuilder {}
 
@@ -26,8 +30,9 @@ impl WorkerBuilder {
     }
 
     /// Build one worker. Shall only be called once inside each worker threads.
-    pub(crate) fn build(&self, tid: u32, n_workers: u32, epoch: *mut Epoch) {
+    pub(crate) fn build<'a>(&self, tid: u32, n_workers: u32, epoch: *mut Epoch) -> &'a mut Worker {
         let worker_ptr = unsafe { do_alloc().unwrap() };
+        Worker::set(worker_ptr.as_ptr());
 
         let mut guard = self.workers.lock();
         assert!(!guard[tid as usize].is_null());
@@ -57,6 +62,8 @@ impl WorkerBuilder {
         if flag == 1 { self.n_not_built_cond.notify_all(); };
 
         self.wait_all_built();
+
+        Worker::get()
     }
 
     fn wait_workers(&self) {
@@ -70,5 +77,28 @@ impl WorkerBuilder {
         let mut guard = self.n_not_built.lock();
         while *guard > 0 { self.n_not_built_cond.wait(&mut guard); };
         drop(guard);
+    }
+}
+
+impl Drop for WorkerBuilder {
+    fn drop(&mut self) {
+        let guard = self.workers.lock();
+        let mut tasks = TaskList::new();
+        for worker in guard.iter() {
+            unsafe {
+                let task_list = (**worker).get_local_queue().lock().pop_all();
+                if !task_list.is_empty() { tasks.push_back_batch(task_list); };
+                do_dealloc(NonNull::new_unchecked(*worker));
+            }
+        };
+        loop {
+            let task = tasks.pop_front();
+            if task.is_none() { break; };
+            let task = task.unwrap();
+            assert_eq!(Task::rc(task), 1);
+            // when the task is in local queues, it must haven't been dropped.
+            Task::drop_in_place(task);
+            Task::rc_dec(task);
+        };
     }
 }

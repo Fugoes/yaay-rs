@@ -123,12 +123,6 @@ impl SyncTaskList {
         SyncTaskListGuard(&self)
     }
 
-    /// Try lock the task list.
-    #[inline]
-    pub fn try_lock(&self) -> Option<SyncTaskListGuard> {
-        if self.raw_mutex.try_lock() { Some(SyncTaskListGuard(&self)) } else { None }
-    }
-
     /// A hint which might be out-date for whether the task list is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
