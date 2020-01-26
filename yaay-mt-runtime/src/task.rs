@@ -1,10 +1,10 @@
-use std::alloc::{alloc, dealloc, Layout};
 use std::future::Future;
 use std::ptr::{drop_in_place, NonNull, null_mut};
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize};
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 use std::sync::atomic::Ordering::SeqCst;
 use std::task::Poll;
 
+use crate::mem::{do_dealloc, do_new};
 use crate::worker::Worker;
 
 /// Dynamically dispatched `Task` which wraps up a `Future`.
@@ -125,22 +125,4 @@ unsafe fn fn_drop_in_place<T>(task: NonNull<Task>) where T: Future<Output=()> + 
 
 unsafe fn fn_dealloc<T>(task: NonNull<Task>) where T: Future<Output=()> + Send {
     do_dealloc(task);
-}
-
-#[inline]
-unsafe fn do_new<T>(data: T) -> Option<NonNull<T>> {
-    let layout = Layout::new::<T>();
-    let ptr = alloc(layout) as *mut T;
-    if ptr.is_null() {
-        return None;
-    } else {
-        ptr.write(data);
-        Some(NonNull::new_unchecked(ptr))
-    }
-}
-
-#[inline]
-unsafe fn do_dealloc<T>(ptr: NonNull<T>) {
-    let layout = Layout::new::<T>();
-    dealloc(ptr.as_ptr() as *mut u8, layout);
 }

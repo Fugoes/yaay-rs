@@ -113,6 +113,9 @@ pub(crate) struct SyncTaskList {
 unsafe impl Sync for SyncTaskList {}
 
 impl SyncTaskList {
+    /// Return an empty `SyncTaskList`.
+    pub fn new() -> Self { Self { raw_mutex: RawMutex::INIT, inner: TaskList::new() } }
+
     /// Lock the task list.
     #[inline]
     pub fn lock(&self) -> SyncTaskListGuard {
@@ -130,7 +133,7 @@ impl SyncTaskList {
     #[inline]
     pub fn is_empty(&self) -> bool {
         let head_ref: &*mut Task = &(self.inner.head);
-        let head_ptr: *const (*mut Task) = head_ref as *const (*mut Task);
+        let head_ptr = head_ref as *const *mut Task;
         let head_atomic_ptr: *const AtomicPtr<Task> = head_ptr as *const AtomicPtr<Task>;
         unsafe { (*head_atomic_ptr).load(Acquire).is_null() }
     }

@@ -1,7 +1,5 @@
-use std::ops::Add;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
-use std::sync::mpsc::RecvTimeoutError::Timeout;
 use std::time::{Duration, Instant};
 
 use parking_lot_core::{park, ParkToken, unpark_all, UnparkToken};

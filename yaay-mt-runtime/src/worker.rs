@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::epoch::Epoch;
 use crate::task::Task;
@@ -37,8 +38,16 @@ struct Private {
 }
 
 impl Worker {
-    pub(crate) unsafe fn new() -> *mut Worker {
-        unimplemented!()
+    pub(crate) fn new(n_workers: u32, epoch: *mut Epoch, other_workers: Box<[*mut Worker]>)
+                      -> Self {
+        let task_list = SyncTaskList::new();
+        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
+        let defer_list = Cell::new(TaskList::new());
+
+        let shared = Shared { task_list };
+        let private = Private { seed, n_workers, epoch, other_workers, defer_list };
+
+        Self { shared, private }
     }
 
     /// Get mutable reference to this thread's worker.
