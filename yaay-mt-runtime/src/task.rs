@@ -1,7 +1,7 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::future::Future;
 use std::ptr::{drop_in_place, NonNull, null_mut};
-use std::sync::atomic::{AtomicPtr, AtomicUsize};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize};
 use std::sync::atomic::Ordering::SeqCst;
 use std::task::Poll;
 
@@ -14,10 +14,10 @@ pub(crate) struct Task {
     /// A next pointer for creating single linked list of tasks, so that all operations to the
     /// linked list are memory allocation free.
     next: *mut Task,
-    /// A worker to schedule the task to when the task is woken. When a waker found the pointer is
-    /// `null_mut()`, the task is already scheduled to exactly one worker, so the task won't need
-    /// to be scheduled. This safety property is guaranteed by using atomic swap operation.
-    worker: AtomicPtr<Worker>,
+    /// One of `BLOCKED`, `SCHEDULED`, `RUNNING`, `DROPPED`.
+    status: AtomicU8,
+    /// Worker pointer.
+    worker_ptr: *mut Worker,
     /// Reference count. When a waker is created from the task, the task's `rc` would be increased
     /// by 1, when the waker is dropped, the task's `rc` would be decreased by 1. The initial `rc`
     /// is set to 1, which represents it is referenced by the runtime. When the runtime finally
@@ -27,13 +27,19 @@ pub(crate) struct Task {
 }
 
 impl Task {
+    const STATUS_BLOCKED: u8 = 0;
+    const STATUS_SCHEDULED: u8 = 1;
+    const STATUS_RUNNING: u8 = 2;
+    const STATUS_DROPPED: u8 = 3;
+
     /// Alloc and initialize a new `NonNull<Task>` which contains the `future`.
     #[inline]
     pub(crate) unsafe fn new<T>(future: T) -> NonNull<Task> where T: Future<Output=()> + Send {
         let task = Task {
             vtable: vtable_of::<T>(),
             next: null_mut(),
-            worker: AtomicPtr::new(null_mut()),
+            status: AtomicU8::new(Self::STATUS_BLOCKED),
+            worker_ptr: null_mut(),
             rc: AtomicUsize::new(0),
         };
         let task_inner = TaskInner { task, future };
@@ -50,21 +56,6 @@ impl Task {
     #[inline]
     pub(crate) fn set_next(mut task: NonNull<Task>, next: *mut Task) {
         unsafe { task.as_mut().next = next; };
-    }
-
-    /// Atomic swap the `task.worker` pointer with `null_mut()`, return the original value of
-    /// `task.worker` which could be `null_mut()`.
-    #[inline]
-    pub(crate) fn get_worker(task: NonNull<Task>) -> *mut Worker {
-        unsafe { task.as_ref().worker.swap(null_mut(), SeqCst) }
-    }
-
-    /// Atomic swap the `task.worker` pointer with the `worker`, the original value of `task.worker`
-    /// must be `null_mut()`.
-    #[inline]
-    pub(crate) fn set_worker(task: NonNull<Task>, worker: NonNull<Worker>) {
-        let ptr = unsafe { task.as_ref().worker.swap(worker.as_ptr(), SeqCst) };
-        assert!(ptr.is_null());
     }
 
     /// Increase the reference count by 1.
