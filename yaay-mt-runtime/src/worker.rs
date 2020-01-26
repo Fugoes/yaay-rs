@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::Relaxed;
+use std::task::Waker;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::epoch::Epoch;
@@ -119,10 +120,15 @@ impl Worker {
     }
 
     #[inline]
+    pub(crate) fn get_local_queue(&mut self) -> &SyncTaskList {
+        &self.shared.task_list
+    }
+
+    #[inline]
     fn poll_task(&mut self, task: NonNull<Task>) {}
 
     #[inline]
-    fn get_epoch<'a>(&self) -> &'a Epoch {
+    pub(crate) fn get_epoch<'a>(&self) -> &'a Epoch {
         unsafe { &(*self.private.epoch) }
     }
 
