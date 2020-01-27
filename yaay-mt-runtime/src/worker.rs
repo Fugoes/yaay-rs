@@ -1,13 +1,16 @@
 use std::cell::Cell;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::ptr::{NonNull, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicPtr};
+use std::ptr::NonNull;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::epoch::Epoch;
+use crate::rng::next_seed;
+use crate::static_var::{get_local, set_local};
 use crate::task::Task;
 use crate::task_list::{SyncTaskList, TaskList};
 
@@ -20,9 +23,16 @@ pub(crate) struct Worker {
 }
 
 #[repr(align(64))]
-struct Shared {
+pub(crate) struct Shared {
     /// The local task queue.
-    task_list: SyncTaskList,
+    pub(crate) task_list: SyncTaskList,
+}
+
+/// Allow access shared data from worker.
+impl Deref for Worker {
+    type Target = Shared;
+
+    fn deref(&self) -> &Self::Target { &self.shared }
 }
 
 #[repr(align(64))]
@@ -34,7 +44,7 @@ struct Private {
     /// The global shared epoch, it is managed by `WorkerBuilder`.
     epoch: NonNull<Epoch>,
     /// Pointers to other workers.
-    other_workers: Box<[*mut Worker]>,
+    other_workers: Box<[NonNull<Worker>]>,
     /// Store locally generated defer tasks. When done polling a task, the worker thread should
     /// check its `defer_list`, if it is not empty, push them in batch to local queue.
     defer_list: Cell<TaskList>,
@@ -43,7 +53,8 @@ struct Private {
 }
 
 impl Worker {
-    pub(crate) fn new(n_workers: u32, epoch: NonNull<Epoch>, other_workers: Box<[*mut Worker]>)
+    /// Create a new worker.
+    pub(crate) fn new(n_workers: u32, epoch: NonNull<Epoch>, other_workers: Box<[NonNull<Worker>]>)
                       -> Self {
         let task_list = SyncTaskList::new();
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
@@ -56,22 +67,31 @@ impl Worker {
         Self { shared, private }
     }
 
-    pub(crate) fn set(worker: *mut Worker) {
-        WORKER.with(|x| x.store(worker as *mut (), Relaxed));
-    }
+    /// Set the `worker` as the current thread's worker.
+    #[inline]
+    pub(crate) unsafe fn set(worker: *mut Worker) { set_local(worker); }
 
     /// Get mutable reference to this thread's worker.
     #[inline]
-    pub(crate) fn get<'a>() -> &'a mut Worker {
-        unsafe { &mut *(WORKER.with(|x| x.load(Relaxed)) as *mut Worker) }
+    pub(crate) fn get<'a>() -> &'a mut Worker { unsafe { &mut *get_local() } }
+
+    /// Push a task to the defer list of the worker.
+    #[inline]
+    pub(crate) fn defer(&mut self, task: NonNull<Task>) {
+        self.private.defer_list.get_mut().push_front(task);
     }
 
+    /// Access the epoch instant stored in private data since it is actually shared globally.
+    #[inline]
+    pub(crate) fn epoch<'a>(&mut self) -> &'a Epoch {
+        unsafe { &*self.private.epoch.as_ptr() }
+    }
+
+    /// The main loop for the worker thread.
     pub(crate) fn main_loop(&mut self) {
         loop {
             'local: loop { // drain local queue
-                let mut guard = self.shared.task_list.lock();
-                let task = guard.pop_front();
-                drop(guard);
+                let task = self.task_list.lock().pop_front();
                 match task {
                     Some(task) => {
                         self.poll_task(task);
@@ -80,45 +100,31 @@ impl Worker {
                     None => {
                         break 'local;
                     }
-                }
-            }
-            let mut old_instant = self.get_epoch().get_instant();
-            let mut old_status = self.get_epoch().set_inactive();
+                };
+            };
+            let mut old_instant = self.epoch().get_instant();
+            let mut old_status = self.epoch().set_inactive();
             let task = 'task: loop {
                 if Epoch::active_count(old_status) != 0 {
-                    // try steal
-                    let victim_index = self.private.seed % (self.private.n_workers - 1);
-                    let victim = unsafe {
-                        &mut **self.private.other_workers.get_unchecked(victim_index as usize)
-                    };
-                    if !(victim.shared.task_list.is_empty()) {
-                        let mut guard = victim.shared.task_list.lock();
-                        let task = guard.pop_front();
-                        drop(guard);
-                        match task {
-                            Some(task) => break 'task task,
-                            None => self.next_seed(),
-                        };
-                    } else {
-                        self.next_seed();
+                    // try steal task
+                    let task = self.try_steal();
+                    match task {
+                        Some(task) => break 'task task,
+                        None => (),
                     };
                 } else {
                     // try wait_next_epoch
-                    let mut guard = self.shared.task_list.lock();
-                    let task = guard.pop_front();
-                    drop(guard);
+                    let task = self.task_list.lock().pop_front();
                     match task {
                         Some(task) => break 'task task,
-                        None => self.get_epoch().wait_next_epoch(old_status, old_instant),
+                        None => self.epoch().wait_next_epoch(old_status, old_instant),
                     };
                 }
                 // update status
-                old_instant = self.get_epoch().get_instant();
-                let new_status = self.get_epoch().get_status();
+                old_instant = self.epoch().get_instant();
+                let new_status = self.epoch().get_status();
                 if Epoch::epoch(new_status) > Epoch::epoch(old_status) {
-                    let mut guard = self.shared.task_list.lock();
-                    let task = guard.pop_front();
-                    drop(guard);
+                    let task = self.task_list.lock().pop_front();
                     match task {
                         Some(task) => break 'task task,
                         None => (),
@@ -126,17 +132,14 @@ impl Worker {
                 };
                 old_status = new_status;
             };
-            self.get_epoch().set_active();
+            self.epoch().set_active();
             self.poll_task(task);
             if self.private.shutdown.load(Relaxed) { return; };
         }
     }
+}
 
-    #[inline]
-    pub(crate) fn get_local_queue(&mut self) -> &SyncTaskList {
-        &self.shared.task_list
-    }
-
+impl Worker {
     #[inline]
     fn poll_task(&mut self, task: NonNull<Task>) {
         let _ = Task::poll(task, self);
@@ -147,27 +150,20 @@ impl Worker {
     }
 
     #[inline]
-    pub(crate) fn get_epoch<'a>(&self) -> &'a Epoch {
-        unsafe { &*self.private.epoch.as_ptr() }
-    }
-
-    #[inline]
-    fn next_seed(&mut self) {
+    fn try_steal(&mut self) -> Option<NonNull<Task>> {
         let seed = self.private.seed;
-        let seed = seed ^ (seed << 13);
-        let seed = seed ^ (seed << 17);
-        let seed = seed ^ (seed << 5);
-        self.private.seed = seed;
-    }
-
-    #[inline]
-    pub(crate) fn defer(&mut self, task: NonNull<Task>) {
-        self.private.defer_list.get_mut().push_front(task);
+        let index = seed % (self.private.n_workers - 1);
+        let victim = unsafe { self.private.other_workers.get_unchecked(index as usize).as_ref() };
+        let task = if victim.task_list.is_empty() { None } else {
+            victim.task_list.lock().pop_front()
+        };
+        if task.is_none() { self.private.seed = next_seed(seed); };
+        task
     }
 }
 
-unsafe impl Send for Worker {}
 
+/// A future for shutdown the whole runtime.
 pub struct Shutdown();
 
 impl Future for Shutdown {
@@ -178,21 +174,15 @@ impl Future for Shutdown {
         worker.private.shutdown.store(true, Relaxed);
         for other_worker in worker.private.other_workers.iter() {
             unsafe {
-                if !(**other_worker).private.shutdown.load(Relaxed) {
+                if !(*other_worker).as_ref().private.shutdown.load(Relaxed) {
                     let task = Task::new(Shutdown());
-                    let mut guard = (**other_worker).shared.task_list.lock();
-                    guard.push_front(task);
-                    drop(guard);
-                    worker.get_epoch().next_epoch();
+                    (*other_worker).as_ref().task_list.lock().push_front(task);
                 };
             };
         };
+        worker.epoch().next_epoch();
         Poll::Ready(())
     }
 }
 
 unsafe impl Send for Shutdown {}
-
-thread_local! {
-pub(crate) static WORKER: AtomicPtr<()> = AtomicPtr::new(null_mut());
-}

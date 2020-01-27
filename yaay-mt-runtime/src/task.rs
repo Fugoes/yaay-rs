@@ -107,10 +107,10 @@ impl Task {
                 if prev == Self::STATUS_BLOCKED {
                     unsafe {
                         let worker = task.as_ref().worker_ptr;
-                        let mut guard = (*worker).get_local_queue().lock();
+                        let mut guard = (*worker).task_list.lock();
                         guard.push_back(task);
                         drop(guard);
-                        (*worker).get_epoch().next_epoch();
+                        // TODO (*worker).get_epoch().next_epoch();
                     };
                 };
                 return;

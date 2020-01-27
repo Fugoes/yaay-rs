@@ -1,4 +1,5 @@
 use std::ops::{Deref, DerefMut};
+use std::path::Iter;
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::Acquire;
@@ -96,6 +97,13 @@ impl TaskList {
         self.tail = null_mut();
         TaskList { head, tail }
     }
+}
+
+/// An iterator iterate from head to tail.
+impl Iterator for TaskList {
+    type Item = NonNull<Task>;
+
+    fn next(&mut self) -> Option<Self::Item> { self.pop_front() }
 }
 
 /// A thread safe task list. It is protected by a mutex. Since the critical section is small

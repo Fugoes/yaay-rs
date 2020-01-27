@@ -4,7 +4,7 @@ use std::ptr::{drop_in_place, NonNull, null_mut};
 use parking_lot::{Condvar, Mutex};
 
 use crate::epoch::Epoch;
-use crate::mem::{do_alloc, do_dealloc};
+use crate::mem::{do_alloc, do_dealloc, do_drop};
 use crate::task::Task;
 use crate::task_list::TaskList;
 use crate::worker::Worker;
@@ -39,7 +39,7 @@ impl WorkerBuilder {
         let epoch = self.epoch;
 
         let worker_ptr = unsafe { do_alloc().unwrap() };
-        Worker::set(worker_ptr.as_ptr());
+        unsafe { Worker::set(worker_ptr.as_ptr()) };
 
         let mut guard = self.workers.lock();
         assert!(guard[tid as usize].is_null());
@@ -50,15 +50,9 @@ impl WorkerBuilder {
 
         self.wait_other_workers();
 
-        let workers = self.workers.lock().clone();
-        let mut other_workers = vec![null_mut(); n_workers as usize - 1].into_boxed_slice();
-        let mut i = 0;
-        for j in 0..n_workers {
-            if j != tid {
-                other_workers[i as usize] = workers[j as usize];
-                i += 1;
-            };
-        };
+        let other_workers = self.workers.lock().clone().iter()
+            .enumerate().filter(|&(i, _)| i != tid as usize).map(|(_, x)| *x)
+            .map(|x| unsafe { NonNull::new_unchecked(x) }).collect();
         unsafe { worker_ptr.as_ptr().write(Worker::new(n_workers, epoch, other_workers)) };
 
         let mut guard = self.n_not_built.lock();
@@ -93,7 +87,7 @@ impl WorkerBuilder {
         let worker = *guard.get(0).unwrap();
         drop(guard);
         unsafe {
-            (*worker).get_local_queue().lock().push_back(task);
+            (*worker).task_list.lock().push_back(task);
             (*self.epoch.as_ptr()).next_epoch();
         };
     }
@@ -101,25 +95,24 @@ impl WorkerBuilder {
 
 impl Drop for WorkerBuilder {
     fn drop(&mut self) {
-        unsafe { do_dealloc(self.epoch) };
-        let guard = self.workers.lock();
         let mut tasks = TaskList::new();
-        for worker in guard.iter() {
-            unsafe {
-                let task_list = (**worker).get_local_queue().lock().pop_all();
+
+        self.workers.lock().iter()
+            .for_each(|worker| unsafe {
+                let task_list = (**worker).task_list.lock().pop_all();
                 if !task_list.is_empty() { tasks.push_back_batch(task_list); };
-                drop_in_place(*worker);
-                do_dealloc(NonNull::new_unchecked(*worker));
-            };
-        };
-        loop {
-            let task = tasks.pop_front();
-            if task.is_none() { break; };
-            let task = task.unwrap();
-            assert_eq!(Task::rc(task), 1);
-            // when the task is in local queues, it must haven't been dropped.
-            Task::drop_in_place(task);
-            Task::rc_dec(task);
-        };
+                do_drop(NonNull::new_unchecked(*worker));
+            });
+
+        tasks.into_iter()
+            .for_each(|task| {
+                if Task::rc(task) > 1 {
+                    eprint!("Task at {:p} still been referenced, memory leak might occur.");
+                };
+                Task::drop_in_place(task);
+                Task::rc_dec(task);
+            });
+
+        unsafe { do_dealloc(self.epoch) };
     }
 }

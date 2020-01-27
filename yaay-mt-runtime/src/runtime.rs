@@ -2,8 +2,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::thread;
 
-use crate::epoch::Epoch;
-use crate::mem::{do_dealloc, do_new};
 use crate::task::Task;
 use crate::worker::{Shutdown, Worker};
 use crate::worker_builder::WorkerBuilder;
