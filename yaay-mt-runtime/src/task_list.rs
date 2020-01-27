@@ -1,5 +1,4 @@
 use std::ops::{Deref, DerefMut};
-use std::path::Iter;
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::Acquire;

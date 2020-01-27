@@ -6,10 +6,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Context, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::epoch::Epoch;
-use crate::rng::next_seed;
+use crate::rng::{next_seed, seed_from_system_time};
 use crate::static_var::{get_local, set_local};
 use crate::task::Task;
 use crate::task_list::{SyncTaskList, TaskList};
@@ -57,7 +56,7 @@ impl Worker {
     pub(crate) fn new(n_workers: u32, epoch: NonNull<Epoch>, other_workers: Box<[NonNull<Worker>]>)
                       -> Self {
         let task_list = SyncTaskList::new();
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
+        let seed = seed_from_system_time();
         let defer_list = Cell::new(TaskList::new());
         let shutdown = AtomicBool::new(false);
 
@@ -140,6 +139,7 @@ impl Worker {
 }
 
 impl Worker {
+    /// Poll the task.
     #[inline]
     fn poll_task(&mut self, task: NonNull<Task>) {
         let _ = Task::poll(task, self);
@@ -149,6 +149,8 @@ impl Worker {
         };
     }
 
+    /// Try steal a task from a random victim. The victim is selected by the `seed`. The seed would
+    /// only be updated when the victim's local queue is empty.
     #[inline]
     fn try_steal(&mut self) -> Option<NonNull<Task>> {
         let seed = self.private.seed;

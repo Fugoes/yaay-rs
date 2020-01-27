@@ -102,15 +102,13 @@ impl Task {
         let mut status = Self::load_status(task);
         loop {
             if status == Self::STATUS_DROPPED { return; };
-            let (succ, prev) = Self::cas_status(task, status, Self::STATUS_SCHEDULED);
+            let (succ, prev) = Self::try_status_to(task, status, Self::STATUS_SCHEDULED);
             if succ {
                 if prev == Self::STATUS_BLOCKED {
                     unsafe {
                         let worker = task.as_ref().worker_ptr;
-                        let mut guard = (*worker).task_list.lock();
-                        guard.push_back(task);
-                        drop(guard);
-                        // TODO (*worker).get_epoch().next_epoch();
+                        (*worker).task_list.lock().push_back(task);
+                        (*worker).epoch().next_epoch();
                     };
                 };
                 return;
@@ -134,7 +132,7 @@ impl Task {
     }
 
     #[inline]
-    fn cas_status(task: NonNull<Task>, current: u8, new: u8) -> (bool, u8) {
+    fn try_status_to(task: NonNull<Task>, current: u8, new: u8) -> (bool, u8) {
         match unsafe { task.as_ref().status.compare_exchange_weak(current, new, SeqCst, Relaxed) } {
             Ok(x) => (true, x),
             Err(x) => (false, x),
@@ -188,9 +186,9 @@ unsafe fn fn_poll<T>(task: NonNull<Task>, worker: &mut Worker) -> Poll<()>
             loop {
                 let (succ, prev) =
                     if status == Task::STATUS_RUNNING {
-                        Task::cas_status(task, Task::STATUS_RUNNING, Task::STATUS_BLOCKED)
+                        Task::try_status_to(task, Task::STATUS_RUNNING, Task::STATUS_BLOCKED)
                     } else { // status == Task::STATUS_SCHEDULED
-                        Task::cas_status(task, Task::STATUS_SCHEDULED, Task::STATUS_RUNNING)
+                        Task::try_status_to(task, Task::STATUS_SCHEDULED, Task::STATUS_RUNNING)
                     };
                 if succ {
                     if prev == Task::STATUS_RUNNING {
