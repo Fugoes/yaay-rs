@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "yaay-runtime-api",
     "yaay-mt-runtime",
+    "yaay-mio",
     "yaay-tests",
 ]

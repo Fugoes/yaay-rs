@@ -5,10 +5,11 @@ use std::sync::atomic::Ordering::{Acquire, Release, SeqCst};
 use std::task::{Context, Poll};
 use std::thread::spawn;
 
-use yaay_mt_runtime::runtime::MTRuntime;
+use yaay_mt_runtime::runtime::MTRuntime as runtime;
+use yaay_runtime_api::RuntimeAPI;
 
 fn main() {
-    MTRuntime::run_with(async_main(), 4);
+    runtime::run_with(async_main(), 4);
 }
 
 static BOOL: AtomicBool = AtomicBool::new(true);
@@ -52,6 +53,6 @@ impl Future for Test {
 async fn async_main() {
     Dummy().await;
     Test().await;
-    MTRuntime::shutdown_async();
+    runtime::shutdown_async();
     println!("async main exit");
 }

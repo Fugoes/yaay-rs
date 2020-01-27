@@ -1,17 +1,22 @@
 use std::future::Future;
 use std::thread;
 
+use yaay_runtime_api::RuntimeAPI;
+
+use crate::batch::BatchGuard;
 use crate::task::Task;
 use crate::worker::{Shutdown, Worker};
 use crate::worker_manager::{RuntimeSharedData, WorkerManager};
 
 pub struct MTRuntime {}
 
-impl MTRuntime {
-    pub fn run_with<T>(async_main: T, n_workers: u32) where T: Future<Output=()> + Send {
-        let mut manager = WorkerManager::new(n_workers);
+impl RuntimeAPI for MTRuntime {
+    type Configuration = u32;
+    fn run_with<T>(async_main: T, n_threads: Self::Configuration)
+        where T: Future<Output=()> + Send {
+        let mut manager = WorkerManager::new(n_threads);
         let mut handles = vec![];
-        for worker_id in 0..n_workers {
+        for worker_id in 0..n_threads {
             let builder = manager.builder();
             let handle = thread::Builder::new()
                 .name(format!("yaay-mt-runtime-worker-{}", worker_id))
@@ -29,7 +34,7 @@ impl MTRuntime {
     }
 
     #[inline]
-    pub fn shutdown_async() {
+    fn shutdown_async() {
         let shared = RuntimeSharedData::get();
         shared.worker_ptrs.iter()
             .for_each(|x| unsafe {
@@ -40,9 +45,12 @@ impl MTRuntime {
     }
 
     #[inline]
-    pub fn defer<T>(future: T) where T: Future<Output=()> + Send {
+    fn defer<T>(future: T) where T: Future<Output=()> + Send {
         let task = unsafe { Task::new(future) };
         let worker = Worker::get();
         worker.defer(task);
     }
+
+    type BatchGuard = BatchGuard;
+    unsafe fn batch_guard() -> Self::BatchGuard { BatchGuard::new() }
 }
