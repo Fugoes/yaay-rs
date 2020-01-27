@@ -1,4 +1,5 @@
-use std::ptr::{NonNull, null_mut};
+use std::future::Future;
+use std::ptr::{drop_in_place, NonNull, null_mut};
 
 use parking_lot::{Condvar, Mutex};
 
@@ -10,6 +11,7 @@ use crate::worker::Worker;
 
 /// Manage workers construction and destruction.
 pub(crate) struct WorkerBuilder {
+    epoch: NonNull<Epoch>,
     workers_cond: Condvar,
     workers: Mutex<Box<[*mut Worker]>>,
     n_not_built_cond: Condvar,
@@ -21,27 +23,32 @@ unsafe impl Send for WorkerBuilder {}
 unsafe impl Sync for WorkerBuilder {}
 
 impl WorkerBuilder {
+    /// Create a new worker builder with `n_workers`.
     pub(crate) fn new(n_workers: u32) -> Self {
+        if n_workers < 2 { panic!(); };
+        let epoch = unsafe { do_alloc() }.unwrap();
         let workers_cond = Condvar::new();
         let workers = Mutex::new(vec![null_mut(); n_workers as usize].into_boxed_slice());
         let n_not_built_cond = Condvar::new();
         let n_not_built = Mutex::new(n_workers);
-        Self { workers_cond, workers, n_not_built_cond, n_not_built }
+        Self { epoch, workers_cond, workers, n_not_built_cond, n_not_built }
     }
 
     /// Build one worker. Shall only be called once inside each worker threads.
-    pub(crate) fn build<'a>(&self, tid: u32, n_workers: u32, epoch: *mut Epoch) -> &'a mut Worker {
+    pub(crate) fn build<'a>(&self, tid: u32, n_workers: u32) -> &'a mut Worker {
+        let epoch = self.epoch;
+
         let worker_ptr = unsafe { do_alloc().unwrap() };
         Worker::set(worker_ptr.as_ptr());
 
         let mut guard = self.workers.lock();
-        assert!(!guard[tid as usize].is_null());
+        assert!(guard[tid as usize].is_null());
         guard[tid as usize] = worker_ptr.as_ptr();
         let flag = guard.iter_mut().all(|ptr| !ptr.is_null());
         drop(guard);
         if flag { self.workers_cond.notify_all(); };
 
-        self.wait_workers();
+        self.wait_other_workers();
 
         let workers = self.workers.lock().clone();
         let mut other_workers = vec![null_mut(); n_workers as usize - 1].into_boxed_slice();
@@ -66,7 +73,8 @@ impl WorkerBuilder {
         Worker::get()
     }
 
-    fn wait_workers(&self) {
+    /// Wait for other workers done initialization. Should be called from a worker thread.
+    fn wait_other_workers(&self) {
         let mut guard = self.workers.lock();
         while !guard.iter_mut().all(|ptr| !ptr.is_null()) { self.workers_cond.wait(&mut guard); };
         drop(guard);
@@ -78,18 +86,31 @@ impl WorkerBuilder {
         while *guard > 0 { self.n_not_built_cond.wait(&mut guard); };
         drop(guard);
     }
+
+    pub(crate) fn push_async_main(&self, async_main: impl Future<Output=()> + Send) {
+        let task = unsafe { Task::new(async_main) };
+        let guard = self.workers.lock();
+        let worker = *guard.get(0).unwrap();
+        drop(guard);
+        unsafe {
+            (*worker).get_local_queue().lock().push_back(task);
+            (*self.epoch.as_ptr()).next_epoch();
+        };
+    }
 }
 
 impl Drop for WorkerBuilder {
     fn drop(&mut self) {
+        unsafe { do_dealloc(self.epoch) };
         let guard = self.workers.lock();
         let mut tasks = TaskList::new();
         for worker in guard.iter() {
             unsafe {
                 let task_list = (**worker).get_local_queue().lock().pop_all();
                 if !task_list.is_empty() { tasks.push_back_batch(task_list); };
+                drop_in_place(*worker);
                 do_dealloc(NonNull::new_unchecked(*worker));
-            }
+            };
         };
         loop {
             let task = tasks.pop_front();

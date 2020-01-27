@@ -32,7 +32,7 @@ struct Private {
     /// Number of workers in the runtime.
     n_workers: u32,
     /// The global shared epoch, it is managed by `WorkerBuilder`.
-    epoch: *mut Epoch,
+    epoch: NonNull<Epoch>,
     /// Pointers to other workers.
     other_workers: Box<[*mut Worker]>,
     /// Store locally generated defer tasks. When done polling a task, the worker thread should
@@ -43,7 +43,7 @@ struct Private {
 }
 
 impl Worker {
-    pub(crate) fn new(n_workers: u32, epoch: *mut Epoch, other_workers: Box<[*mut Worker]>)
+    pub(crate) fn new(n_workers: u32, epoch: NonNull<Epoch>, other_workers: Box<[*mut Worker]>)
                       -> Self {
         let task_list = SyncTaskList::new();
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
@@ -57,12 +57,14 @@ impl Worker {
     }
 
     pub(crate) fn set(worker: *mut Worker) {
-        WORKER.with(|x| x.store(worker, Relaxed));
+        WORKER.with(|x| x.store(worker as *mut (), Relaxed));
     }
 
     /// Get mutable reference to this thread's worker.
     #[inline]
-    pub(crate) fn get<'a>() -> &'a mut Worker { unsafe { &mut *WORKER.with(|x| x.load(Relaxed)) } }
+    pub(crate) fn get<'a>() -> &'a mut Worker {
+        unsafe { &mut *(WORKER.with(|x| x.load(Relaxed)) as *mut Worker) }
+    }
 
     pub(crate) fn main_loop(&mut self) {
         loop {
@@ -146,7 +148,7 @@ impl Worker {
 
     #[inline]
     pub(crate) fn get_epoch<'a>(&self) -> &'a Epoch {
-        unsafe { &(*self.private.epoch) }
+        unsafe { &*self.private.epoch.as_ptr() }
     }
 
     #[inline]
@@ -181,6 +183,7 @@ impl Future for Shutdown {
                     let mut guard = (**other_worker).shared.task_list.lock();
                     guard.push_front(task);
                     drop(guard);
+                    worker.get_epoch().next_epoch();
                 };
             };
         };
@@ -191,5 +194,5 @@ impl Future for Shutdown {
 unsafe impl Send for Shutdown {}
 
 thread_local! {
-pub(crate) static WORKER: AtomicPtr<Worker> = AtomicPtr::new(null_mut());
+pub(crate) static WORKER: AtomicPtr<()> = AtomicPtr::new(null_mut());
 }

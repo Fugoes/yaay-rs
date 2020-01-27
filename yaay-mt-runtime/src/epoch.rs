@@ -146,8 +146,8 @@ use parking_lot_core::{park, ParkToken, unpark_all, UnparkToken};
 /// `L6` (the proof's (1) would be wrong). This is avoided by checking time elapsed. If the
 /// `old_instant` is `MAX_DURATION` earlier, the `wait_next_epoch()` method won't block. For a 23
 /// bits unsigned integer `epoch` to overflow to same number, the `next_epoch()` needs to be invoked
-/// 8388608 times, which at least requires 8388608 atomic `fetch_add(1)` operations. Hopefully it
-/// should take longer than 100us.
+/// 8388608 times, which at least requires 8388608 atomic `fetch_add(EPOCH)` operations.
+/// Hopefully it should take longer than 1000us.
 ///
 /// The key for this proof is that, the worker needs to guarantee rechecking local queue before try
 /// to `wait_next_epoch()`. Optimization keeping this property could be applied without breaking the
@@ -163,8 +163,10 @@ const ACTIVE_COUNT_BITS: u32 = 9;
 const ACTIVE_COUNT_MASK: u32 = !(((!(0 as u32)) >> ACTIVE_COUNT_BITS) << ACTIVE_COUNT_BITS);
 /// The '1' for epoch
 const EPOCH: u32 = 1 << ACTIVE_COUNT_BITS;
-/// Max safe duration without epoch counter overflow.
-const MAX_DURATION: Duration = Duration::from_nanos(100_000);
+/// Max safe duration without epoch counter overflow. Since the duration is measured using
+/// `Instant`, which should be able to measure sub microsecond duration, it is set to 1000
+/// microseconds here.
+const MAX_DURATION: Duration = Duration::from_micros(1_000);
 
 impl Epoch {
     /// Init with `n_threads` in active state. If `n_threads` is too large, panic.
@@ -174,44 +176,57 @@ impl Epoch {
         Self(AtomicU32::new(n_threads))
     }
 
+    /// Return `Instant::now()`. Should be called before `get_status()` to measure how old is the
+    /// status when checking status in `wait_next_epoch()`.
     #[inline]
     pub(crate) fn get_instant(&self) -> Instant {
         Instant::now()
     }
 
+    /// Return a might-not-so-up-to-date status. Should be used in combination with `get_instant()`.
     #[inline]
-    pub(crate) fn get_status(&self) -> u32 {
-        self.0.load(Acquire)
-    }
+    pub(crate) fn get_status(&self) -> u32 { self.0.load(SeqCst) }
 
+    /// Set current worker thread to active state, and return the status after this operation.
+    /// Should only be called from a currently inactive worker thread.
     #[inline]
     pub(crate) fn set_active(&self) -> u32 {
         let status = self.0.fetch_add(1, SeqCst);
-        if Epoch::active_count(status) == 0 { self.wake_all(); };
+        if Epoch::active_count(status) == 0 { self.wake_all_slow(); };
         status + 1
     }
 
+    /// Set current worker thread to inactive state, and return the status after this operation.
+    /// Should only be called from a currently active worker thread.
     #[inline]
     pub(crate) fn set_inactive(&self) -> u32 {
         self.0.fetch_sub(1, SeqCst) - 1
     }
 
+    /// Wait for next epoch. It would return immediately when the `old_instant` is older than
+    /// `MAX_DURATION` before. Should only be called when `active_count(old_status) == 0`.
     #[inline]
     pub(crate) fn wait_next_epoch(&self, old_status: u32, old_instant: Instant) {
-        if self.0.load(SeqCst) == old_status { self.wait(old_status, old_instant); };
+        if self.0.load(SeqCst) == old_status { self.wait_slow(old_status, old_instant); };
     }
 
+    /// Notify all workers that next epoch has arrived. Should be called whenever new tasks are
+    /// pushed to local queues.
     #[inline]
     pub(crate) fn next_epoch(&self) {
         let status = self.0.fetch_add(EPOCH, SeqCst);
-        if Epoch::active_count(status) == 0 { self.wake_all(); };
+        if Epoch::active_count(status) == 0 { self.wake_all_slow(); };
     }
 
+    /// Get number of active worker threads from `status` returned by `get_status()`,
+    /// `set_active()`, and `set_inactive()`.
     #[inline]
     pub(crate) fn active_count(status: u32) -> u32 {
         status & ACTIVE_COUNT_MASK
     }
 
+    /// Get the epoch number from `status` returned by `get_status()`, `set_active()`, and
+    /// `set_inactive()`.
     #[inline]
     pub(crate) fn epoch(status: u32) -> u32 {
         status >> ACTIVE_COUNT_BITS
@@ -219,8 +234,11 @@ impl Epoch {
 }
 
 impl Epoch {
-    // The slow path, no need to inline.
-    fn wait(&self, old_status: u32, old_instant: Instant) {
+    /// Using `parking_lot::park()` to park current worker thread. When doing validation inside the
+    /// parking lot, if both (1) Time elapsed since `old_instant` does not exceed `MAX_DURATION` and
+    /// (2) Current status is still `old_status`, park current worker thread, if not, return
+    /// immediately. Since this is the slow path, no need to inline.
+    fn wait_slow(&self, old_status: u32, old_instant: Instant) {
         let key = &self.0 as *const AtomicU32 as usize;
         let validate = move || {
             unsafe {
@@ -234,8 +252,9 @@ impl Epoch {
         unsafe { park(key, validate, || {}, |_, _| {}, ParkToken(0), None) };
     }
 
-    // The slow path, no need to inline.
-    fn wake_all(&self) {
+    /// Wake up all worker threads parked in the parking lot by calling `parking_lot::unpark_all()`.
+    /// Since this is the slow path, no need to inline.
+    fn wake_all_slow(&self) {
         let key = &self.0 as *const AtomicU32 as usize;
         unsafe { unpark_all(key, UnparkToken(0)) };
     }
