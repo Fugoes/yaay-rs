@@ -49,19 +49,29 @@ struct Private {
     defer_list: Cell<TaskList>,
     /// Shutdown indicator.
     shutdown: AtomicBool,
+    /// Worker id.
+    worker_id: u32,
 }
 
 impl Worker {
     /// Create a new worker.
-    pub(crate) fn new(n_workers: u32, epoch: NonNull<Epoch>, other_workers: Box<[NonNull<Worker>]>)
-                      -> Self {
+    pub(crate) fn new(worker_id: u32, n_workers: u32, epoch: NonNull<Epoch>,
+                      other_workers: Box<[NonNull<Worker>]>) -> Self {
         let task_list = SyncTaskList::new();
         let seed = seed_from_system_time();
         let defer_list = Cell::new(TaskList::new());
         let shutdown = AtomicBool::new(false);
 
         let shared = Shared { task_list };
-        let private = Private { seed, n_workers, epoch, other_workers, defer_list, shutdown };
+        let private = Private {
+            seed,
+            n_workers,
+            epoch,
+            other_workers,
+            defer_list,
+            shutdown,
+            worker_id,
+        };
 
         Self { shared, private }
     }
@@ -142,10 +152,11 @@ impl Worker {
     /// Poll the task.
     #[inline]
     fn poll_task(&mut self, task: NonNull<Task>) {
-        let _ = Task::poll(task, self);
+        Task::poll(task);
         if !self.private.defer_list.get_mut().is_empty() {
             let tasks = self.private.defer_list.get_mut().pop_all();
             self.shared.task_list.lock().push_front_batch(tasks);
+            // no need to call `next_epoch()` here
         };
     }
 
@@ -159,7 +170,10 @@ impl Worker {
         let task = if victim.task_list.is_empty() { None } else {
             victim.task_list.lock().pop_front()
         };
-        if task.is_none() { self.private.seed = next_seed(seed); };
+        match task {
+            Some(task) => Task::set_worker_id(task, self.private.worker_id),
+            None => self.private.seed = next_seed(seed),
+        };
         task
     }
 }

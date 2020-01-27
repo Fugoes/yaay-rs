@@ -1,14 +1,17 @@
+use std::cell::Cell;
 use std::future::Future;
 use std::mem::forget;
 use std::pin::Pin;
-use std::ptr::{drop_in_place, NonNull, null_mut};
+use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicU8, AtomicUsize, spin_loop_hint};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
 use std::task::{Context, Poll};
 
-use crate::mem::{do_dealloc, do_new};
+use crate::mem::{do_dealloc, do_drop_in_place, do_new};
+use crate::static_var::get_local;
+use crate::task_list::TaskList;
 use crate::task_waker::task_waker_from;
-use crate::worker::Worker;
+use crate::worker_manager::RuntimeSharedData;
 
 /// Dynamically dispatched `Task` which wraps up a `Future`. It meets the following requirements:
 /// - One task shouldn't be in multiple workers' local queues.
@@ -30,8 +33,9 @@ pub(crate) struct Task {
     /// A next pointer for creating single linked list of tasks, so that all operations to the
     /// linked list are memory allocation free.
     next: *mut Task,
-    /// Worker pointer.
-    worker_ptr: *mut Worker,
+    /// Provide a hint for which worker to schedule the task to. When a worker steal a task from
+    /// another worker, it would set the task's `worker_id` to itself.
+    worker_id: u32,
 }
 
 impl Task {
@@ -48,7 +52,7 @@ impl Task {
             status: AtomicU8::new(Self::STATUS_BLOCKED),
             rc: AtomicUsize::new(1),
             next: null_mut(),
-            worker_ptr: null_mut(),
+            worker_id: 0,
         };
         let task_inner = TaskInner { task, future };
         do_new(task_inner).unwrap().cast()
@@ -66,6 +70,24 @@ impl Task {
         unsafe { task.as_mut().next = next; };
     }
 
+    /// Get method of the `worker_id`.
+    #[inline]
+    pub(crate) fn get_worker_id(task: NonNull<Task>) -> u32 {
+        unsafe { task.as_ref().worker_id }
+    }
+
+    /// Set method of the `worker_id`.
+    #[inline]
+    pub(crate) fn set_worker_id(task: NonNull<Task>, worker_id: u32) {
+        unsafe { (&mut *task.as_ptr()).worker_id = worker_id };
+    }
+
+    /// Get current reference count.
+    #[inline]
+    pub(crate) fn rc(task: NonNull<Task>) -> usize {
+        unsafe { task.as_ref().rc.load(Relaxed) }
+    }
+
     /// Increase the reference count by 1.
     #[inline]
     pub(crate) fn rc_inc(task: NonNull<Task>) {
@@ -73,6 +95,8 @@ impl Task {
     }
 
     /// Decrease the reference count by 1. Dealloc the memory when the reference count reaches 0.
+    /// Since the runtime only release its reference to a task when the task is dropped, so only
+    /// dealloc is needed here.
     #[inline]
     pub(crate) fn rc_dec(task: NonNull<Task>) {
         unsafe {
@@ -82,57 +106,108 @@ impl Task {
         }
     }
 
-    /// Get current reference count.
-    #[inline]
-    pub(crate) fn rc(task: NonNull<Task>) -> usize {
-        unsafe { task.as_ref().rc.load(Relaxed) }
-    }
-
-    /// Dispatched to `TaskVTable.fn_drop_in_place`.
-    #[inline]
-    pub(crate) fn drop_in_place(task: NonNull<Task>) {
-        unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
-    }
-
     /// Atomically wake up the task. Guarantee the task would be polled again eventually, though
     /// multiple invocations of `wake()` might share one `poll()` invocation. Guarantee dropped
-    /// tasks won't be scheduled.
+    /// tasks won't be scheduled. All possible state transition in this function are:
+    /// - `BLOCKED` to `SCHEDULED`: then schedule the task.
+    /// - `RUNNING` to `SCHEDULED`: do nothing, since the `Task::poll_with()` method would recheck
+    ///   the status after each poll until it is `BLOCKED`.
+    /// - `SCHEDULED` to `SCHEDULED`: do nothing, since the task has already been scheduled.
+    /// If the task is `DROPPED`, do nothing.
     #[inline]
     pub(crate) fn wake(task: NonNull<Task>) {
-        let mut status = Self::load_status(task);
+        let mut status = Self::get_status(task);
         loop {
             if status == Self::STATUS_DROPPED { return; };
-            let (succ, prev) = Self::try_status_to(task, status, Self::STATUS_SCHEDULED);
+            let (succ, prev) = Self::try_change_status(task, status, Self::STATUS_SCHEDULED);
             if succ {
-                if prev == Self::STATUS_BLOCKED {
-                    unsafe {
-                        let worker = task.as_ref().worker_ptr;
-                        (*worker).task_list.lock().push_back(task);
-                        (*worker).epoch().next_epoch();
+                if prev == Self::STATUS_BLOCKED { // `BLOCKED` to `SCHEDULED`
+                    let worker_id = Task::get_worker_id(task) as usize;
+                    match RuntimeLocalData::get() {
+                        Some(local) => {
+                            let task_lists = local.task_lists.get_mut();
+                            let task_list = unsafe { task_lists.get_unchecked_mut(worker_id) };
+                            task_list.push_back(task);
+                        }
+                        None => {
+                            let shared = RuntimeSharedData::get();
+                            let worker = unsafe { shared.worker_ptrs.get_unchecked(worker_id) };
+                            unsafe { worker.as_ref().task_list.lock().push_back(task) };
+                            unsafe { shared.epoch.as_ref().next_epoch() };
+                        }
                     };
                 };
+                // `RUNNING` to `SCHEDULED`: do nothing
+                // `SCHEDULED` to `SCHEDULED`: do nothing
                 return;
             } else {
                 status = prev;
                 spin_loop_hint();
-            }
-        }
-    }
-
-    /// Dispatched to `TaskVTable.fn_poll`.
-    #[inline]
-    pub(crate) fn poll(task: NonNull<Task>, worker: &mut Worker) -> Poll<()> {
-        let result = unsafe { (task.as_ref().vtable.fn_poll)(task, worker) };
-        if result.is_ready() {
-            unsafe { task.as_ref().status.swap(Self::STATUS_DROPPED, SeqCst) };
-            Self::drop_in_place(task);
-            Self::rc_dec(task);
+            };
         };
-        result
     }
 
+    /// Dispatched to `TaskVTable.fn_poll`. Shall only be called from one thread at the same time.
+    /// All possible state transition in this function are:
+    /// - `SCHEDULED` to `BLOCKED`: the task is polled to `Pending`.
+    /// - `SCHEDULED` to `DROPPED`: the task is polled to `Ready`.
+    /// If the task is `DROPPED`, do nothing. When ever returning from the inner poll function of
+    /// the task, the task's status is `SCHEDULED`, this function would repoll it.
     #[inline]
-    fn try_status_to(task: NonNull<Task>, current: u8, new: u8) -> (bool, u8) {
+    pub(crate) fn poll(task: NonNull<Task>) {
+        let status = Self::get_status(task);
+        if status == Self::STATUS_DROPPED { return; };
+        Self::swap_status(task, Self::STATUS_RUNNING);
+
+        let waker = unsafe { task_waker_from(task) };
+        let mut cx = Context::from_waker(&waker);
+        'outer: loop {
+            let result = unsafe { (task.as_ref().vtable.fn_poll)(task, &mut cx) };
+            if result.is_pending() {
+                let mut status = Self::STATUS_RUNNING;
+                loop {
+                    let (succ, prev) =
+                        if status == Self::STATUS_RUNNING {
+                            Self::try_change_status(task, status, Self::STATUS_BLOCKED)
+                        } else { // status == Self::STATUS_SCHEDULED
+                            Self::try_change_status(task, status, Self::STATUS_RUNNING)
+                        };
+                    if succ {
+                        if prev == Self::STATUS_RUNNING {
+                            break 'outer; // return
+                        } else { // prev == Self::STATUS_SCHEDULED
+                            break; // repoll
+                        };
+                    } else {
+                        status = prev;
+                        spin_loop_hint();
+                    };
+                };
+            } else {
+                Self::swap_status(task, Self::STATUS_DROPPED);
+                unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
+                Self::rc_dec(task);
+                break 'outer;
+            };
+        };
+        forget(waker);
+    }
+
+    /// Dispatched to `TaskVTable.fn_drop_in_place`. Safe to be called multiple times and from
+    /// multiple threads concurrently.
+    #[inline]
+    pub(crate) fn drop_in_place(task: NonNull<Task>) {
+        let status = Self::swap_status(task, Self::STATUS_DROPPED);
+        assert_ne!(status, Self::STATUS_RUNNING);
+        if status != Self::STATUS_DROPPED {
+            unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
+        };
+    }
+}
+
+impl Task {
+    #[inline]
+    fn try_change_status(task: NonNull<Task>, current: u8, new: u8) -> (bool, u8) {
         match unsafe { task.as_ref().status.compare_exchange_weak(current, new, SeqCst, Relaxed) } {
             Ok(x) => (true, x),
             Err(x) => (false, x),
@@ -140,15 +215,19 @@ impl Task {
     }
 
     #[inline]
-    fn load_status(task: NonNull<Task>) -> u8 {
+    fn get_status(task: NonNull<Task>) -> u8 {
         unsafe { task.as_ref().status.load(Acquire) }
+    }
+
+    #[inline]
+    fn swap_status(task: NonNull<Task>, to: u8) -> u8 {
+        unsafe { task.as_ref().status.swap(to, SeqCst) }
     }
 }
 
-
 struct TaskVTable {
-    /// The poll function. A waker is created from the `&mut Worker` to poll the inner `Future`.
-    fn_poll: unsafe fn(NonNull<Task>, &mut Worker) -> Poll<()>,
+    /// The poll function.
+    fn_poll: unsafe fn(NonNull<Task>, &mut Context) -> Poll<()>,
     /// The drop function. It won't deallocate the memory.
     fn_drop_in_place: unsafe fn(NonNull<Task>),
     /// The deallocate function.
@@ -172,47 +251,34 @@ fn vtable_of<T>() -> &'static TaskVTable where T: Future<Output=()> + Send {
     }
 }
 
-unsafe fn fn_poll<T>(task: NonNull<Task>, worker: &mut Worker) -> Poll<()>
+unsafe fn fn_poll<T>(task: NonNull<Task>, cx: &mut Context) -> Poll<()>
     where T: Future<Output=()> + Send {
-    let waker = task_waker_from(task);
-    let mut cx = Context::from_waker(&waker);
     let inner = task.cast::<TaskInner<T>>();
-    (*inner.as_ptr()).task.worker_ptr = worker as *mut Worker;
-    inner.as_ref().task.status.swap(Task::STATUS_RUNNING, SeqCst);
-    let result = 'outer: loop {
-        let result = Future::poll(Pin::new_unchecked(&mut (*inner.as_ptr()).future), &mut cx);
-        if !(result.is_ready()) {
-            let mut status = Task::load_status(task);
-            loop {
-                let (succ, prev) =
-                    if status == Task::STATUS_RUNNING {
-                        Task::try_status_to(task, Task::STATUS_RUNNING, Task::STATUS_BLOCKED)
-                    } else { // status == Task::STATUS_SCHEDULED
-                        Task::try_status_to(task, Task::STATUS_SCHEDULED, Task::STATUS_RUNNING)
-                    };
-                if succ {
-                    if prev == Task::STATUS_RUNNING {
-                        break 'outer result;
-                    } else { // prev == Task::STATUS_SCHEDULED
-                        break;
-                    };
-                } else {
-                    status = prev;
-                    spin_loop_hint();
-                }
-            };
-        } else {
-            break 'outer result;
-        };
-    };
-    forget(waker);
-    result
+    Pin::new_unchecked(&mut (*inner.as_ptr()).future).poll(cx)
 }
 
 unsafe fn fn_drop_in_place<T>(task: NonNull<Task>) where T: Future<Output=()> + Send {
-    drop_in_place(task.cast::<TaskInner<T>>().as_ptr());
+    let inner = task.cast::<TaskInner<T>>();
+    do_drop_in_place(inner);
 }
 
 unsafe fn fn_dealloc<T>(task: NonNull<Task>) where T: Future<Output=()> + Send {
-    do_dealloc(task.cast::<TaskInner<T>>());
+    let inner = task.cast::<TaskInner<T>>();
+    do_dealloc(inner);
+}
+
+/// To support batching push tasks, as well as reduce `next_epoch()` calls, store a
+/// `RuntimeLocalData` pointer in the reactor's thread local storage. When `Task::wake()` is called,
+/// it would check if this pointer is null to decide whether using batch push mode.
+struct RuntimeLocalData {
+    task_lists: Cell<Box<[TaskList]>>,
+}
+
+impl RuntimeLocalData {
+    /// Return a mutable reference to local data.
+    #[inline]
+    fn get<'a>() -> Option<&'a mut Self> {
+        let local = unsafe { get_local() } as *mut RuntimeLocalData;
+        if local.is_null() { None } else { Some(unsafe { &mut *local }) }
+    }
 }

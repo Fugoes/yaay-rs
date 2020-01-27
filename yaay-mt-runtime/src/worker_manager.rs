@@ -111,7 +111,7 @@ impl WorkerBuilder {
             .enumerate().filter(|&(i, _)| i != self.worker_id as usize)
             .map(|(_, x)| NonNull::new(*x).unwrap())
             .collect();
-        let worker = Worker::new(manager.n_workers, manager.epoch, other_workers);
+        let worker = Worker::new(self.worker_id, manager.n_workers, manager.epoch, other_workers);
         unsafe { worker_ptr.as_ptr().write(worker) };
 
         let mut guard = manager.n_built.lock();
