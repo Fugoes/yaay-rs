@@ -23,8 +23,9 @@ impl MTRuntime {
             handles.push(handle);
         };
         let guard = manager.wait();
-        for handle in handles.into_iter() { let _ = handle.join(); };
         guard.run(async_main);
+        for handle in handles.into_iter() { let _ = handle.join(); };
+        drop(guard);
     }
 
     #[inline]

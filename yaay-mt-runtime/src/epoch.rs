@@ -162,7 +162,7 @@ const ACTIVE_COUNT_BITS: u32 = 9;
 /// The mask to get the active count.
 const ACTIVE_COUNT_MASK: u32 = !(((!(0 as u32)) >> ACTIVE_COUNT_BITS) << ACTIVE_COUNT_BITS);
 /// The '1' for epoch
-const EPOCH: u32 = 1 << ACTIVE_COUNT_BITS;
+const EPOCH: u32 = (1 as u32) << ACTIVE_COUNT_BITS;
 /// Max safe duration without epoch counter overflow. Since the duration is measured using
 /// `Instant`, which should be able to measure sub microsecond duration, it is set to 1000
 /// microseconds here.
