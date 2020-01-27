@@ -15,7 +15,7 @@ impl BatchGuard {
         Self()
     }
 
-    pub fn next_batch(&self) {
+    pub fn push_batch(&self) {
         let shared = RuntimeSharedData::get();
         let local = unsafe { RuntimeLocalData::get_unchecked() };
         let mut all_empty = true;
@@ -35,7 +35,7 @@ impl BatchGuard {
 
 impl Drop for BatchGuard {
     fn drop(&mut self) {
-        self.next_batch();
+        self.push_batch();
         let local = unsafe { get_local() } as *mut RuntimeLocalData;
         unsafe { set_local(null_mut() as *mut ()) };
         if !local.is_null() { unsafe { do_drop(NonNull::new_unchecked(local)) }; };
