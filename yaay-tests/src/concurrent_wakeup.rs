@@ -23,9 +23,7 @@ impl Future for Dummy {
         for _ in 0..4 {
             let waker = cx.waker().clone();
             spawn(move || {
-                for _ in 0..10000000 {
-                    waker.wake_by_ref();
-                };
+                for _ in 0..10000000 { waker.wake_by_ref(); };
                 N.fetch_sub(1, SeqCst);
             });
         };
@@ -54,5 +52,6 @@ impl Future for Test {
 async fn async_main() {
     Dummy().await;
     Test().await;
-    MTRuntime::shutdown().await;
+    MTRuntime::shutdown_async();
+    println!("async main exit");
 }

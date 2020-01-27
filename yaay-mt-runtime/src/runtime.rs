@@ -3,7 +3,7 @@ use std::thread;
 
 use crate::task::Task;
 use crate::worker::{Shutdown, Worker};
-use crate::worker_manager::WorkerManager;
+use crate::worker_manager::{RuntimeSharedData, WorkerManager};
 
 pub struct MTRuntime {}
 
@@ -29,7 +29,15 @@ impl MTRuntime {
     }
 
     #[inline]
-    pub fn shutdown() -> Shutdown { Shutdown() }
+    pub fn shutdown_async() {
+        let shared = RuntimeSharedData::get();
+        shared.worker_ptrs.iter()
+            .for_each(|x| unsafe {
+                let task = Task::new(Shutdown());
+                (*x.as_ptr()).task_list.lock().push_front(task);
+            });
+        unsafe { shared.epoch.as_ref().next_epoch() };
+    }
 
     #[inline]
     pub fn defer<T>(future: T) where T: Future<Output=()> + Send {
