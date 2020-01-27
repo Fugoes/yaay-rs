@@ -1,4 +1,5 @@
 pub mod runtime;
+pub mod batch;
 
 mod mem;
 mod rng;

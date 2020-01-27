@@ -270,15 +270,30 @@ unsafe fn fn_dealloc<T>(task: NonNull<Task>) where T: Future<Output=()> + Send {
 /// To support batching push tasks, as well as reduce `next_epoch()` calls, store a
 /// `RuntimeLocalData` pointer in the reactor's thread local storage. When `Task::wake()` is called,
 /// it would check if this pointer is null to decide whether using batch push mode.
-struct RuntimeLocalData {
-    task_lists: Cell<Box<[TaskList]>>,
+pub(crate) struct RuntimeLocalData {
+    pub(crate) task_lists: Cell<Box<[TaskList]>>,
 }
 
 impl RuntimeLocalData {
+    /// Return an empty instance.
+    pub(crate) fn new() -> Self {
+        let n = RuntimeSharedData::get().worker_ptrs.len();
+        let mut task_lists = vec![];
+        for _ in 0..n { task_lists.push(TaskList::new()); };
+        RuntimeLocalData { task_lists: Cell::new(task_lists.into_boxed_slice()) }
+    }
+
     /// Return a mutable reference to local data.
     #[inline]
-    fn get<'a>() -> Option<&'a mut Self> {
+    pub(crate) fn get<'a>() -> Option<&'a mut Self> {
         let local = unsafe { get_local() } as *mut RuntimeLocalData;
         if local.is_null() { None } else { Some(unsafe { &mut *local }) }
+    }
+
+    /// Return a mutable reference to local data without checking.
+    #[inline]
+    pub(crate) unsafe fn get_unchecked<'a>() -> &'a mut Self {
+        let local = get_local() as *mut RuntimeLocalData;
+        &mut *local
     }
 }
