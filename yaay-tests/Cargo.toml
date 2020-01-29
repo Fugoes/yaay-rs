@@ -10,6 +10,7 @@ edition = "2018"
 yaay-runtime-api = { path = "../yaay-runtime-api" }
 yaay-mt-runtime = { path = "../yaay-mt-runtime" }
 yaay-mio = { path = "../yaay-mio" }
+mio = "0.6.*"
 
 #[[bin]]
 #name = "concurrent_wakeup"

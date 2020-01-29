@@ -1,4 +1,6 @@
-use yaay_mio::net::TcpListener;
+use mio::IoVec;
+
+use yaay_mio::net::{TcpListener, TcpStream};
 use yaay_mio::prelude::*;
 use yaay_mt_runtime::runtime::MTRuntime as runtime;
 use yaay_runtime_api::RuntimeAPI;
@@ -14,13 +16,20 @@ async fn async_main() {
     let acceptor = listener.acceptor().await;
     loop {
         match acceptor.accept().await {
-            Ok((_, a)) => println!("{:?}", a),
+            Ok((client, addr)) => {
+                println!("accept {}", addr);
+                runtime::defer(handle_client(client));
+            }
             Err(_err) => {
-                println!("shutdown");
                 runtime::shutdown_async();
                 return;
-            },
+            }
         }
     }
 }
 
+async fn handle_client(client: TcpStream) {
+    let writer = client.writer().await;
+    let data = vec![IoVec::from_bytes("hello world\n".as_bytes()).unwrap()];
+    writer.write_bufs(data.as_slice()).await.unwrap();
+}
