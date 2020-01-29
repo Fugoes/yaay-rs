@@ -16,9 +16,10 @@ async fn async_main() {
         match acceptor.accept().await {
             Ok((_, a)) => println!("{:?}", a),
             Err(_err) => {
+                println!("shutdown");
                 runtime::shutdown_async();
                 return;
-            }
+            },
         }
     }
 }

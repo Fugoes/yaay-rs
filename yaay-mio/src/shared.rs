@@ -10,11 +10,16 @@ use crate::dispatcher::RWDispatcher;
 pub(crate) struct SharedData {
     pub(crate) poll: mio::Poll,
     pub(crate) dispatchers: Mutex<Slab<RWDispatcher>>,
+    pub(crate) deferred_remove: Mutex<Vec<usize>>,
 }
 
 impl SharedData {
     pub(crate) fn new() -> Self {
-        Self { poll: mio::Poll::new().unwrap(), dispatchers: Mutex::new(Slab::new()) }
+        Self {
+            poll: mio::Poll::new().unwrap(),
+            dispatchers: Mutex::new(Slab::new()),
+            deferred_remove: Mutex::new(Vec::new()),
+        }
     }
 
     #[inline]

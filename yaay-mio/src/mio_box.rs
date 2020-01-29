@@ -23,7 +23,7 @@ impl<T> Drop for MIOData<T> where T: mio::Evented {
     fn drop(&mut self) {
         let shared = SharedData::get();
         shared.poll.deregister(&self.inner).unwrap();
-        shared.dispatchers.lock().remove(self.key);
+        shared.deferred_remove.lock().push(self.key);
     }
 }
 

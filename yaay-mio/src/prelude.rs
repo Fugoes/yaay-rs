@@ -43,12 +43,17 @@ pub unsafe fn mio_spawn_event_loop<RT: RuntimeAPI>() -> JoinHandle<()> {
                         let key = poll_event.token().0;
                         let event = poll_event.readiness();
                         let guard = shared.dispatchers.lock();
-                        // The MIOData<T> might have been dropped
                         guard.get(key).map(|dispatcher| {
                             if event.is_readable() { dispatcher.dispatch_readable(); };
                             if event.is_writable() { dispatcher.dispatch_writable(); };
                         });
                     };
+                    let mut dispatchers_guard = shared.dispatchers.lock();
+                    let mut guard = shared.deferred_remove.lock();
+                    for key in guard.iter() { dispatchers_guard.remove(*key); };
+                    guard.clear();
+                    drop(guard);
+                    drop(dispatchers_guard);
                     if n > 0 { RT::push_batch(&batch_guard) };
                 };
             })
