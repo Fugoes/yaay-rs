@@ -9,7 +9,12 @@ edition = "2018"
 [dependencies]
 yaay-runtime-api = { path = "../yaay-runtime-api" }
 yaay-mt-runtime = { path = "../yaay-mt-runtime" }
+yaay-mio = { path = "../yaay-mio" }
+
+#[[bin]]
+#name = "concurrent_wakeup"
+#path = "src/concurrent_wakeup.rs"
 
 [[bin]]
-name = "concurrent_wakeup"
-path = "src/concurrent_wakeup.rs"
+name = "mio"
+path = "src/mio.rs"

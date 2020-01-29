@@ -12,8 +12,12 @@ pub struct MTRuntime {}
 
 impl RuntimeAPI for MTRuntime {
     type Configuration = u32;
-    fn run_with<T>(async_main: T, n_threads: Self::Configuration)
-        where T: Future<Output=()> + Send {
+    fn run_with<T, FnOnStart, FnOnShutdown, R>(async_main: T, n_threads: u32,
+                                               on_start: &mut FnOnStart,
+                                               on_shutdown: &mut FnOnShutdown)
+        where T: Future<Output=()> + Send,
+              FnOnStart: FnMut() -> R,
+              FnOnShutdown: FnMut(R) -> () {
         let mut manager = WorkerManager::new(n_threads);
         let mut handles = vec![];
         for worker_id in 0..n_threads {
@@ -28,8 +32,10 @@ impl RuntimeAPI for MTRuntime {
             handles.push(handle);
         };
         let guard = manager.wait();
+        let r = (*on_start)();
         guard.run(async_main);
         for handle in handles.into_iter() { let _ = handle.join(); };
+        (*on_shutdown)(r);
         drop(guard);
     }
 
@@ -53,4 +59,5 @@ impl RuntimeAPI for MTRuntime {
 
     type BatchGuard = BatchGuard;
     unsafe fn batch_guard() -> Self::BatchGuard { BatchGuard::new() }
+    unsafe fn push_batch(batch_guard: &BatchGuard) { batch_guard.push_batch(); }
 }
