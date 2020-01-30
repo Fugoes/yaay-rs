@@ -11,6 +11,7 @@ yaay-runtime-api = { path = "../yaay-runtime-api" }
 yaay-mt-runtime = { path = "../yaay-mt-runtime" }
 yaay-mio = { path = "../yaay-mio" }
 mio = "0.6.*"
+bencher = "0.1.5"
 
 #[[bin]]
 #name = "concurrent_wakeup"
@@ -19,3 +20,7 @@ mio = "0.6.*"
 [[bin]]
 name = "mio"
 path = "src/mio.rs"
+
+#[[bin]]
+#name = "spawn_defer_bench"
+#path = "src/spawn_defer_bench.rs"

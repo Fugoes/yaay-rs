@@ -12,6 +12,7 @@ pub trait RuntimeAPI {
     fn shutdown_async();
 
     fn defer<T>(future: T) where T: Future<Output=()> + Send;
+    fn spawn<T>(future: T) where T: Future<Output=()> + Send;
 
     type BatchGuard;
     unsafe fn batch_guard() -> Self::BatchGuard;

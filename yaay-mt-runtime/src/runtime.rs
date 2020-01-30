@@ -57,6 +57,13 @@ impl RuntimeAPI for MTRuntime {
         worker.defer(task);
     }
 
+    #[inline]
+    fn spawn<T>(future: T) where T: Future<Output=()> + Send {
+        let task = unsafe { Task::new(future) };
+        let worker = Worker::get();
+        worker.spawn(task);
+    }
+
     type BatchGuard = BatchGuard;
     unsafe fn batch_guard() -> Self::BatchGuard { BatchGuard::new() }
     unsafe fn push_batch(batch_guard: &BatchGuard) { batch_guard.push_batch(); }

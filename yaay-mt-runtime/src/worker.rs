@@ -90,6 +90,23 @@ impl Worker {
         self.private.defer_list.get_mut().push_front(task);
     }
 
+    /// Push a task to a local queue.
+    #[inline]
+    pub(crate) fn spawn(&mut self, task: NonNull<Task>) {
+        let target_index = (self.private.seed % self.private.n_workers) as usize;
+        self.private.seed = next_seed(self.private.seed);
+        if target_index == self.private.n_workers as usize - 1 {
+            // push to this worker's local queue
+            self.shared.task_list.lock().push_back(task);
+            // no need to call next_epoch() here, since current worker is active
+        } else {
+            // push to other worker's local queue
+            let target = unsafe { *self.private.other_workers.get_unchecked(target_index) };
+            unsafe { target.as_ref().shared.task_list.lock().push_back(task) };
+            unsafe { self.private.epoch.as_ref().next_epoch() };
+        };
+    }
+
     /// Access the epoch instant stored in private data since it is actually shared globally.
     #[inline]
     pub(crate) fn epoch<'a>(&mut self) -> &'a Epoch {
