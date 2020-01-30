@@ -25,10 +25,9 @@ async fn ping() {
     let msg = vec![IoVec::from_bytes("ping".as_bytes()).unwrap()];
     let mut vec_buf = vec![0; 4].into_boxed_slice();
     let mut buf = vec![IoVec::from_bytes_mut(vec_buf.as_mut()).unwrap()];
-    for _ in 0..10000 {
-        let _ = writer.write_bufs(msg.as_slice()).await;
-        let _ = reader.read_bufs(buf.as_mut_slice()).await;
-    };
+    let _ = writer.write_bufs(msg.as_slice()).await;
+    let _ = reader.read_bufs(&mut buf).await;
+    let _ = reader.read_bufs(&mut buf).await;
     runtime::shutdown_async();
 }
 

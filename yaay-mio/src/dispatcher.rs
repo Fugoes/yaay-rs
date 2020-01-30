@@ -84,8 +84,26 @@ impl AtomicDispatcher {
         do_drop(NonNull::new_unchecked(self.inner));
     }
 
-    pub(crate) fn prepare_io(&self) -> Waiter {
-        unsafe { (*self.inner).prepare_io() }
+    #[inline]
+    pub(crate) fn prepare_io(&self) {
+        unsafe { (*self.inner).status.swap(AtomicDispatcherInner::MUTED, SeqCst) };
+    }
+
+    #[inline]
+    pub(crate) fn try_wait_io(&self) -> bool {
+        let status = unsafe { &(*self.inner).status };
+        loop {
+            match status.compare_exchange_weak(AtomicDispatcherInner::MUTED, 0, SeqCst, Relaxed) {
+                Ok(_) => {
+                    return true;
+                }
+                Err(val) => {
+                    if val != AtomicDispatcherInner::MUTED {
+                        return false;
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -105,40 +123,5 @@ impl AtomicDispatcherInner {
     fn notify(&self) {
         let prev = self.status.swap(Self::NOTIFIED | Self::MUTED, SeqCst);
         if prev & Self::MUTED == 0 && prev & Self::NOTIFIED == 0 { self.waker.wake_by_ref(); };
-    }
-
-    #[inline]
-    fn prepare_io(&self) -> Waiter {
-        self.status.swap(Self::MUTED, SeqCst);
-        Waiter(self, true)
-    }
-}
-
-pub(crate) struct Waiter<'a>(&'a AtomicDispatcherInner, bool);
-
-impl<'a> Future for Waiter<'a> {
-    type Output = ();
-
-    #[inline]
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut_self = unsafe { self.get_unchecked_mut() };
-        if mut_self.1 {
-            mut_self.1 = false;
-            loop {
-                match mut_self.0.status.compare_exchange_weak(AtomicDispatcherInner::MUTED, 0,
-                                                              SeqCst, Relaxed) {
-                    Ok(_) => {
-                        return Poll::Pending;
-                    }
-                    Err(val) => {
-                        if val != AtomicDispatcherInner::MUTED {
-                            return Poll::Ready(());
-                        }
-                    }
-                };
-            };
-        } else {
-            return Poll::Ready(());
-        };
     }
 }

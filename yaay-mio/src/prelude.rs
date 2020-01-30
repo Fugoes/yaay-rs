@@ -9,6 +9,7 @@ use parking_lot::{Condvar, Mutex};
 
 use yaay_runtime_api::RuntimeAPI;
 
+pub use crate::io_traits::{AsyncVectoredRead, AsyncVectoredWrite};
 use crate::shared::SharedData;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
