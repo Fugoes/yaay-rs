@@ -3,12 +3,12 @@ use std::io;
 
 use iovec::IoVec;
 
-pub trait AsyncVectoredRead<'a, 'b> {
-    type R: Future<Output=io::Result<usize>> + Send + 'a;
-    fn read_bufs(&'a self, bufs: &'a mut [&'b mut IoVec]) -> Self::R;
+pub trait AsyncVectoredRead<'f, 's, 'bufs, 'iovec> {
+    type R: 'f + Future<Output=io::Result<usize>> + Send;
+    fn read_bufs(&'s self, bufs: &'bufs mut [&'iovec mut IoVec]) -> Self::R;
 }
 
-pub trait AsyncVectoredWrite<'a, 'b> {
-    type R: 'a + Future<Output=io::Result<usize>> + Send;
-    fn write_bufs(&'a self, bufs: &'a [&'b IoVec]) -> Self::R;
+pub trait AsyncVectoredWrite<'f, 's, 'bufs, 'iovec> {
+    type R: 'f + Future<Output=io::Result<usize>> + Send;
+    fn write_bufs(&'s self, bufs: &'bufs [&'iovec IoVec]) -> Self::R;
 }

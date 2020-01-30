@@ -209,42 +209,58 @@ impl TcpStream {
 
 pub struct TcpStreamReader(MIOBox<mio::net::TcpStream>);
 
-pub struct TcpStreamReaderReadBufsFuture<'a, 'b>(&'a TcpStreamReader, &'a mut [&'b mut IoVec]);
+pub struct TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec> {
+    mio_box: &'s TcpStreamReader,
+    bufs: &'bufs mut [&'iovec mut IoVec],
+}
 
-impl<'a, 'b> Future for TcpStreamReaderReadBufsFuture<'a, 'b> {
+impl<'s, 'bufs, 'iovec> Future for TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = unsafe { self.get_unchecked_mut() };
-        io_poll!((mut_self.0).0.dispatcher, (mut_self.0).0.mio_data.inner.read_bufs(mut_self.1));
+        io_poll!(
+            mut_self.mio_box.0.dispatcher,
+            mut_self.mio_box.0.mio_data.inner.read_bufs(mut_self.bufs)
+        );
     }
 }
 
-impl<'a, 'b: 'a> AsyncVectoredRead<'a, 'b> for TcpStreamReader {
-    type R = TcpStreamReaderReadBufsFuture<'a, 'b>;
+impl<'f, 's: 'f, 'bufs: 'f, 'iovec: 'bufs> AsyncVectoredRead<'f, 's, 'bufs, 'iovec>
+for TcpStreamReader {
+    type R = TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec>;
 
-    fn read_bufs(&'a self, bufs: &'a mut [&'b mut IoVec]) -> Self::R {
-        TcpStreamReaderReadBufsFuture(self, bufs)
+    fn read_bufs(&'s self, bufs: &'bufs mut [&'iovec mut IoVec]) -> Self::R {
+        let mio_box = self;
+        TcpStreamReaderReadBufsFuture { mio_box, bufs }
     }
 }
 
 pub struct TcpStreamWriter(MIOBox<mio::net::TcpStream>);
 
-pub struct TcpStreamWriterWriteBufsFuture<'a, 'b>(&'a TcpStreamWriter, &'a [&'b IoVec]);
+pub struct TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec> {
+    mio_box: &'s TcpStreamWriter,
+    bufs: &'bufs [&'iovec IoVec],
+}
 
-impl<'a, 'b> Future for TcpStreamWriterWriteBufsFuture<'a, 'b> {
+impl<'s, 'bufs, 'iovec> Future for TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = unsafe { self.get_unchecked_mut() };
-        io_poll!((mut_self.0).0.dispatcher, (mut_self.0).0.mio_data.inner.write_bufs(mut_self.1));
+        io_poll!(
+            mut_self.mio_box.0.dispatcher,
+            mut_self.mio_box.0.mio_data.inner.write_bufs(mut_self.bufs)
+        );
     }
 }
 
-impl<'a, 'b: 'a> AsyncVectoredWrite<'a, 'b> for TcpStreamWriter {
-    type R = TcpStreamWriterWriteBufsFuture<'a, 'b>;
+impl<'f, 's: 'f, 'bufs: 'f, 'iovec: 'bufs> AsyncVectoredWrite<'f, 's, 'bufs, 'iovec>
+for TcpStreamWriter {
+    type R = TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec>;
 
-    fn write_bufs(&'a self, bufs: &'a [&'b IoVec]) -> Self::R {
-        TcpStreamWriterWriteBufsFuture(self, bufs)
+    fn write_bufs(&'s self, bufs: &'bufs [&'iovec IoVec]) -> Self::R {
+        let mio_box = self;
+        TcpStreamWriterWriteBufsFuture { mio_box, bufs }
     }
 }
