@@ -160,10 +160,10 @@ impl Drop for WorkerGuard {
             });
         tasks.into_iter().for_each(|task| {
             assert!(Task::rc(task) > 0);
+            Task::drop_in_place(task);
             if Task::rc(task) != 1 {
                 eprintln!("Task<{:p}> has references. Memory leak might occur!", task.as_ptr());
             };
-            Task::drop_in_place(task);
             Task::rc_dec(task);
         });
         unsafe { do_drop(shared.epoch) };

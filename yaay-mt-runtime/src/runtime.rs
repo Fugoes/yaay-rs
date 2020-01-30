@@ -12,12 +12,16 @@ pub struct MTRuntime {}
 
 impl RuntimeAPI for MTRuntime {
     type Configuration = u32;
-    fn run_with<T, FnOnStart, FnOnShutdown, R>(async_main: T, n_threads: u32,
-                                               on_start: &mut FnOnStart,
-                                               on_shutdown: &mut FnOnShutdown)
+
+    fn run_with<T, FnOnStart, FnOnShutdown, FnOnExit, R0, R1>(async_main: T,
+                                                              n_threads: Self::Configuration,
+                                                              on_start: &mut FnOnStart,
+                                                              on_shutdown: &mut FnOnShutdown,
+                                                              on_exit: &mut FnOnExit)
         where T: Future<Output=()> + Send,
-              FnOnStart: FnMut() -> R,
-              FnOnShutdown: FnMut(R) -> () {
+              FnOnStart: FnMut() -> R0,
+              FnOnShutdown: FnMut(R0) -> R1,
+              FnOnExit: FnMut(R1) -> () {
         let mut manager = WorkerManager::new(n_threads);
         let mut handles = vec![];
         for worker_id in 0..n_threads {
@@ -32,11 +36,12 @@ impl RuntimeAPI for MTRuntime {
             handles.push(handle);
         };
         let guard = manager.wait();
-        let r = (*on_start)();
+        let r0 = (*on_start)();
         guard.run(async_main);
         for handle in handles.into_iter() { let _ = handle.join(); };
-        (*on_shutdown)(r);
+        let r1 = (*on_shutdown)(r0);
         drop(guard);
+        (*on_exit)(r1);
     }
 
     #[inline]

@@ -2,12 +2,15 @@ use std::future::Future;
 
 pub trait RuntimeAPI {
     type Configuration;
-    fn run_with<T, FnOnStart, FnOnShutdown, R>(async_main: T, config: Self::Configuration,
-                                               on_start: &mut FnOnStart,
-                                               on_shutdown: &mut FnOnShutdown)
+    fn run_with<T, FnOnStart, FnOnShutdown, FnOnExit, R0, R1>(async_main: T,
+                                                              config: Self::Configuration,
+                                                              on_start: &mut FnOnStart,
+                                                              on_shutdown: &mut FnOnShutdown,
+                                                              on_exit: &mut FnOnExit)
         where T: Future<Output=()> + Send,
-              FnOnStart: FnMut() -> R,
-              FnOnShutdown: FnMut(R) -> ();
+              FnOnStart: FnMut() -> R0,
+              FnOnShutdown: FnMut(R0) -> R1,
+              FnOnExit: FnMut(R1) -> ();
 
     fn shutdown_async();
 

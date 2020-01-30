@@ -26,6 +26,9 @@ impl SharedData {
     pub(crate) fn get<'a>() -> &'a mut SharedData { unsafe { &mut *SHARED.load(Relaxed) } }
 
     #[inline]
+    pub(crate) unsafe fn get_ptr() -> *mut SharedData { SHARED.load(Relaxed) }
+
+    #[inline]
     pub(crate) unsafe fn set_ptr<'a>(ptr: *mut SharedData) { SHARED.store(ptr, Relaxed) }
 }
 

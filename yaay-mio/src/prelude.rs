@@ -9,7 +9,6 @@ use parking_lot::{Condvar, Mutex};
 
 use yaay_runtime_api::RuntimeAPI;
 
-pub use crate::io_traits::{AsyncVectoredRead, AsyncVectoredWrite};
 use crate::shared::SharedData;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -71,5 +70,16 @@ pub unsafe fn mio_spawn_event_loop<RT: RuntimeAPI>() -> JoinHandle<()> {
 pub unsafe fn mio_shutdown(handle: JoinHandle<()>) {
     SHUTDOWN.store(true, Release);
     let _ = handle.join();
-    // TODO
+}
+
+pub unsafe fn mio_exit(_: ()) {
+    let shared = SharedData::get();
+    let mut dispatcher_guard = shared.dispatchers.lock();
+    let mut guard = shared.deferred_remove.lock();
+    for key in guard.iter() { dispatcher_guard.remove(*key); };
+    guard.clear();
+    drop(guard);
+    drop(dispatcher_guard);
+
+    Box::from_raw(SharedData::get_ptr());
 }

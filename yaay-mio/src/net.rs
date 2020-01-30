@@ -9,7 +9,6 @@ use std::time::Duration;
 use iovec::IoVec;
 use mio::Ready;
 
-use crate::io_traits::{AsyncVectoredRead, AsyncVectoredWrite};
 use crate::mio_box::{MIOBox, MIOData};
 
 pub struct TcpListener(Arc<MIOData<mio::net::TcpListener>>);
@@ -209,12 +208,12 @@ impl TcpStream {
 
 pub struct TcpStreamReader(MIOBox<mio::net::TcpStream>);
 
-pub struct TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec> {
+pub struct TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec: 'bufs> {
     mio_box: &'s TcpStreamReader,
     bufs: &'bufs mut [&'iovec mut IoVec],
 }
 
-impl<'s, 'bufs, 'iovec> Future for TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec> {
+impl<'s, 'bufs, 'iovec: 'bufs> Future for TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -226,24 +225,41 @@ impl<'s, 'bufs, 'iovec> Future for TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iov
     }
 }
 
-impl<'f, 's: 'f, 'bufs: 'f, 'iovec: 'bufs> AsyncVectoredRead<'f, 's, 'bufs, 'iovec>
-for TcpStreamReader {
-    type R = TcpStreamReaderReadBufsFuture<'s, 'bufs, 'iovec>;
-
-    fn read_bufs(&'s self, bufs: &'bufs mut [&'iovec mut IoVec]) -> Self::R {
+impl TcpStreamReader {
+    #[inline]
+    pub async fn read_bufs(&self, bufs: &mut [&mut IoVec]) -> io::Result<usize> {
         let mio_box = self;
-        TcpStreamReaderReadBufsFuture { mio_box, bufs }
+        TcpStreamReaderReadBufsFuture { mio_box, bufs }.await
+    }
+
+    #[inline]
+    pub async fn read(&self, buf: &mut IoVec) -> io::Result<usize> {
+        let mut bufs = [buf];
+        self.read_bufs(&mut bufs).await
+    }
+
+    #[inline]
+    pub async fn read_exact(&self, buf: &mut IoVec) -> io::Result<()> {
+        let mut begin = 0;
+        while begin < buf.len() {
+            let buf: &mut IoVec = (&mut buf[begin..]).into();
+            match self.read(buf).await {
+                Ok(n) => begin += n,
+                Err(err) => return Err(err),
+            };
+        };
+        Ok(())
     }
 }
 
 pub struct TcpStreamWriter(MIOBox<mio::net::TcpStream>);
 
-pub struct TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec> {
+pub struct TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec: 'bufs> {
     mio_box: &'s TcpStreamWriter,
     bufs: &'bufs [&'iovec IoVec],
 }
 
-impl<'s, 'bufs, 'iovec> Future for TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec> {
+impl<'s, 'bufs, 'iovec: 'bufs> Future for TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -255,12 +271,29 @@ impl<'s, 'bufs, 'iovec> Future for TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'io
     }
 }
 
-impl<'f, 's: 'f, 'bufs: 'f, 'iovec: 'bufs> AsyncVectoredWrite<'f, 's, 'bufs, 'iovec>
-for TcpStreamWriter {
-    type R = TcpStreamWriterWriteBufsFuture<'s, 'bufs, 'iovec>;
-
-    fn write_bufs(&'s self, bufs: &'bufs [&'iovec IoVec]) -> Self::R {
+impl TcpStreamWriter {
+    #[inline]
+    pub async fn write_bufs(&self, bufs: &[&IoVec]) -> io::Result<usize> {
         let mio_box = self;
-        TcpStreamWriterWriteBufsFuture { mio_box, bufs }
+        TcpStreamWriterWriteBufsFuture { mio_box, bufs }.await
+    }
+
+    #[inline]
+    pub async fn write(&self, buf: &IoVec) -> io::Result<usize> {
+        let bufs = [buf];
+        self.write_bufs(&bufs).await
+    }
+
+    #[inline]
+    pub async fn write_exact(&self, buf: &IoVec) -> io::Result<()> {
+        let mut begin = 0;
+        while begin < buf.len() {
+            let buf: &IoVec = buf[begin..].into();
+            match self.write(buf).await {
+                Ok(n) => begin += n,
+                Err(err) => return Err(err),
+            };
+        };
+        Ok(())
     }
 }
