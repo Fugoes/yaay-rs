@@ -65,23 +65,11 @@ pub struct TcpListenerAcceptor(MIOBox<mio::net::TcpListener>);
 impl TcpListenerAcceptor {
     #[inline]
     pub async fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        let mio_data = &self.0.mio_data.inner;
-        loop {
-            let waiter = self.0.dispatcher.prepare_io();
-            match mio_data.accept() {
-                Ok(res) => {
-                    let events = mio::Ready::readable(); // accept is readable event
-                    return Ok((TcpStream(Arc::new(MIOData::new(res.0, events))), res.1));
-                }
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        waiter.await;
-                    } else {
-                        return Err(err);
-                    };
-                }
-            };
+        let map: fn((mio::net::TcpStream, SocketAddr)) -> (TcpStream, SocketAddr) = |res| {
+            let events = mio::Ready::readable(); // accept is readable event
+            (TcpStream(Arc::new(MIOData::new(res.0, events))), res.1)
         };
+        do_io!(self.0, self.0.mio_data.inner.accept(), map);
     }
 }
 
@@ -209,22 +197,7 @@ pub struct TcpStreamReader(MIOBox<mio::net::TcpStream>);
 impl TcpStreamReader {
     #[inline]
     pub async fn read_bufs(&self, bufs: &mut [&mut IoVec]) -> io::Result<usize> {
-        let mio_data = &self.0.mio_data.inner;
-        loop {
-            let waiter = self.0.dispatcher.prepare_io();
-            match mio_data.read_bufs(bufs) {
-                Ok(res) => {
-                    return Ok(res);
-                }
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        waiter.await;
-                    } else {
-                        return Err(err);
-                    };
-                }
-            };
-        };
+        do_io!(self.0, self.0.mio_data.inner.read_bufs(bufs));
     }
 }
 
@@ -233,21 +206,6 @@ pub struct TcpStreamWriter(MIOBox<mio::net::TcpStream>);
 impl TcpStreamWriter {
     #[inline]
     pub async fn write_bufs(&self, bufs: &[&IoVec]) -> io::Result<usize> {
-        let mio_data = &self.0.mio_data.inner;
-        loop {
-            let waiter = self.0.dispatcher.prepare_io();
-            match mio_data.write_bufs(bufs) {
-                Ok(res) => {
-                    return Ok(res);
-                }
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        waiter.await;
-                    } else {
-                        return Err(err);
-                    };
-                }
-            };
-        };
+        do_io!(self.0, self.0.mio_data.inner.write_bufs(bufs));
     }
 }
