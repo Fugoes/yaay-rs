@@ -9,7 +9,11 @@ use yaay_mt_runtime::runtime::MTRuntime as runtime;
 use yaay_runtime_api::RuntimeAPI;
 
 fn main() {
-    runtime::run_with(async_main(), 4);
+    let mut fn_start = || {};
+    let mut fn_shutdown = |_| {};
+    let mut fn_exit = |_| {};
+    runtime::run_with(async_main(), 8,
+                      &mut fn_start, &mut fn_shutdown, &mut fn_exit);
 }
 
 static BOOL: AtomicBool = AtomicBool::new(true);

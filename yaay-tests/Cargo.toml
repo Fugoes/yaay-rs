@@ -12,15 +12,20 @@ yaay-mt-runtime = { path = "../yaay-mt-runtime" }
 yaay-mio = { path = "../yaay-mio" }
 mio = "0.6.*"
 bencher = "0.1.5"
-
-#[[bin]]
-#name = "concurrent_wakeup"
-#path = "src/concurrent_wakeup.rs"
+tokio = { version = "0.2", features = ["full"] }
 
 [[bin]]
-name = "mio"
-path = "src/mio.rs"
+name = "concurrent_wakeup"
+path = "src/concurrent_wakeup.rs"
 
-#[[bin]]
-#name = "spawn_defer_bench"
-#path = "src/spawn_defer_bench.rs"
+[[bin]]
+name = "mio_ping_pong"
+path = "src/mio_ping_pong.rs"
+
+[[bin]]
+name = "spawn_defer_bench"
+path = "src/spawn_defer_bench.rs"
+
+[[bin]]
+name = "tokio_ping_pong"
+path = "src/tokio_ping_pong.rs"

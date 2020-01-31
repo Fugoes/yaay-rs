@@ -11,7 +11,9 @@ async fn work() {
 fn spawn_bench(bench: &mut Bencher) {
     let mut fn_start = || {};
     let mut fn_shutdown = |_| {};
-    runtime::run_with(spawn_bench_async_main(bench), 8, &mut fn_start, &mut fn_shutdown);
+    let mut fn_exit = |_| {};
+    runtime::run_with(spawn_bench_async_main(bench), 8,
+                      &mut fn_start, &mut fn_shutdown, &mut fn_exit);
 }
 
 async fn spawn_bench_async_main(bench: &mut Bencher) {
@@ -24,7 +26,9 @@ async fn spawn_bench_async_main(bench: &mut Bencher) {
 fn defer_bench(bench: &mut Bencher) {
     let mut fn_start = || {};
     let mut fn_shutdown = |_| {};
-    runtime::run_with(defer_bench_async_main(bench), 8, &mut fn_start, &mut fn_shutdown);
+    let mut fn_exit = |_| {};
+    runtime::run_with(defer_bench_async_main(bench), 8,
+                      &mut fn_start, &mut fn_shutdown, &mut fn_exit);
 }
 
 async fn defer_bench_async_main(bench: &mut Bencher) {

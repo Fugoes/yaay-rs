@@ -13,7 +13,8 @@ use crate::shared::SharedData;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-pub unsafe fn mio_spawn_event_loop<RT: RuntimeAPI>() -> JoinHandle<()> {
+#[allow(non_camel_case_types)]
+pub unsafe fn mio_spawn_event_loop<runtime: RuntimeAPI>() -> JoinHandle<()> {
     let init = Arc::new(Mutex::new(false));
     let init_cond = Arc::new(Condvar::new());
 
@@ -33,12 +34,12 @@ pub unsafe fn mio_spawn_event_loop<RT: RuntimeAPI>() -> JoinHandle<()> {
                 drop(init);
                 drop(init_cond);
 
-                let batch_guard = RT::batch_guard();
-                let duration = Duration::from_micros(500);
+                let batch_guard = runtime::batch_guard();
+                let duration = Some(Duration::from_micros(500));
                 let shared = SharedData::get();
-                let mut poll_events = mio::Events::with_capacity(1024);
+                let mut poll_events = mio::Events::with_capacity(64);
                 while !SHUTDOWN.load(Acquire) {
-                    let n = shared.poll.poll(&mut poll_events, Some(duration)).unwrap();
+                    let n = shared.poll.poll(&mut poll_events, duration).unwrap();
                     for poll_event in poll_events.iter() {
                         let key = poll_event.token().0;
                         let event = poll_event.readiness();
@@ -54,7 +55,7 @@ pub unsafe fn mio_spawn_event_loop<RT: RuntimeAPI>() -> JoinHandle<()> {
                     guard.clear();
                     drop(guard);
                     drop(dispatchers_guard);
-                    if n > 0 { RT::push_batch(&batch_guard) };
+                    if n > 0 { runtime::push_batch(&batch_guard) };
                 };
             })
             .unwrap()
