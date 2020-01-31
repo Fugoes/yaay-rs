@@ -89,6 +89,7 @@ impl Dispatcher {
             match status.compare_exchange_weak(Dispatcher::MUTED, 0, SeqCst, Relaxed) {
                 Ok(_) => {
                     PendingOnce(true).await;
+                    return;
                 }
                 Err(val) => {
                     if val != Dispatcher::MUTED {

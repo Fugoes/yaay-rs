@@ -1,9 +1,8 @@
-
 use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Context, Poll};
 
@@ -11,7 +10,7 @@ use crate::epoch::Epoch;
 use crate::rng::{next_seed, seed_from_system_time};
 use crate::shared::{get_local, set_local};
 use crate::task::Task;
-use crate::task_list::{SyncTaskList};
+use crate::task_list::SyncTaskList;
 
 /// Runtime worker. Each runtime threads' worker is stored in a thread local variable.
 pub(crate) struct Worker {
@@ -81,17 +80,18 @@ impl Worker {
     /// Push a task to a local queue.
     #[inline]
     pub(crate) fn spawn(&mut self, task: NonNull<Task>) {
+        // let target_index = (self.private.seed % (self.private.n_workers - 1)) as usize;
         let target_index = (self.private.seed % self.private.n_workers) as usize;
         self.private.seed = next_seed(self.private.seed);
-        if target_index == self.private.n_workers as usize - 1 {
-            // push to this worker's local queue
-            self.shared.task_list.lock().push_back(task);
-            // no need to call next_epoch() here, since current worker is active
-        } else {
+        if target_index + 1 != self.private.n_workers as usize {
             // push to other worker's local queue
             let target = unsafe { *self.private.other_workers.get_unchecked(target_index) };
             unsafe { target.as_ref().shared.task_list.lock().push_back(task) };
             unsafe { self.private.epoch.as_ref().next_epoch() };
+        } else {
+            // push to this worker's local queue
+            self.shared.task_list.lock().push_back(task);
+            // no need to call next_epoch() here, since current worker is active
         };
     }
 
@@ -121,7 +121,7 @@ impl Worker {
             let task = 'task: loop {
                 if Epoch::active_count(old_status) != 0 {
                     // try steal task
-                    for _ in 0..(16 * self.private.n_workers) {
+                    for _ in 0..(4 * self.private.n_workers) {
                         let task = self.try_steal();
                         match task {
                             Some(task) => break 'task task,
@@ -176,9 +176,12 @@ impl Worker {
         let seed = self.private.seed;
         let index = seed % (self.private.n_workers - 1);
         let victim = unsafe { self.private.other_workers.get_unchecked(index as usize).as_ref() };
-        let task = if victim.task_list.is_empty() { None } else {
-            victim.task_list.lock().pop_front()
-        };
+        let task =
+            if victim.task_list.is_empty() {
+                None
+            } else {
+                victim.task_list.lock().pop_front()
+            };
         match task {
             Some(task) => Task::set_worker_id(task, self.private.worker_id),
             None => self.private.seed = next_seed(seed),

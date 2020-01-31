@@ -28,7 +28,7 @@ impl Future for Dummy {
         for _ in 0..4 {
             let waker = cx.waker().clone();
             spawn(move || {
-                for _ in 0..10000000 { waker.wake_by_ref(); };
+                for _ in 0..100000000 { waker.wake_by_ref(); };
                 N.fetch_sub(1, SeqCst);
             });
         };

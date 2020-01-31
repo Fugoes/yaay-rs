@@ -20,7 +20,7 @@ fn main() {
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..N { tokio::spawn(empty()); };
-    delay_for(Duration::from_secs(10000));
+    delay_for(Duration::from_secs(10000)).await;
     Ok(())
 }
 

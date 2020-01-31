@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 use slab::Slab;
@@ -97,12 +97,12 @@ impl GlobalData {
                         let batch = RT::batch_guard();
                         let local = LocalData::get();
                         let mut poll_events = mio::Events::with_capacity(1024);
-                        let timeout = Some(Duration::from_millis(1000 + (tid as u64) * 10));
+                        let timeout = Some(Duration::from_millis(1000));
                         while !SHUTDOWN.load(Acquire) {
-                            let _n = local.poll.poll(&mut poll_events, timeout);
+                            let n = local.poll.poll(&mut poll_events, timeout).unwrap();
                             let guard = local.dispatchers.lock();
-                            for (_k, poll_event) in poll_events.iter().enumerate() {
-                                // if (k + 1) % 32 == 0 { RT::push_batch(&batch) };
+                            for (k, poll_event) in poll_events.iter().enumerate() {
+                                if (k + 1) % 128 == 0 { RT::push_batch(&batch) };
                                 let key = poll_event.token().0;
                                 let ready = poll_event.readiness();
                                 let slot = guard.get_unchecked(key);

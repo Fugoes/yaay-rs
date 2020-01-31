@@ -49,7 +49,7 @@ impl Task {
     pub(crate) unsafe fn new<T>(future: T) -> NonNull<Task> where T: Future<Output=()> + Send {
         let task = Task {
             vtable: vtable_of::<T>(),
-            status: AtomicU8::new(Self::MUTED),
+            status: AtomicU8::new(Self::MUTED | Self::NOTIFIED),
             rc: AtomicUsize::new(1),
             next: null_mut(),
             worker_id: 0,
@@ -116,7 +116,7 @@ impl Task {
         // If previous status is `| MUTED | _ | _ |` or `| _ | _ | DROPPED |, do nothing.
         if prev & (Self::MUTED | Self::DROPPED) != 0 { return; };
         // Previous status could not be `| !MUTED | NOTIFIED | !DROPPED |`.
-        // assert_ne!(prev, Self::NOTIFIED);
+        // assert!(prev == 0);
         // Now previous should be `| !MUTED | !NOTIFIED | !DROPPED |`, we need to schedule it to a
         // local queue.
         let worker_id = Task::get_worker_id(task) as usize;
@@ -140,11 +140,13 @@ impl Task {
     #[inline]
     pub(crate) fn poll(task: NonNull<Task>) {
         // After the task is pushed to the queue, its status is `| MUTED | NOTIFIED | !DROPPED |`.
+        let status = unsafe { &task.as_ref().status };
         let waker = unsafe { task_waker_from(task) };
         let mut cx = Context::from_waker(&waker);
         'outer: loop {
             // Unset the `NOTIFIED` bit, in case during the polling, new wake up events happen.
-            unsafe { task.as_ref().status.fetch_and(!Self::NOTIFIED, SeqCst) };
+            let prev = unsafe { task.as_ref().status.fetch_and(!Self::NOTIFIED, SeqCst) };
+            // assert!(prev & Self::MUTED != 0);
             // Now its status is `| MUTED | !NOTIFIED | !DROPPED |`.
             let result = unsafe { (task.as_ref().vtable.fn_poll)(task, &mut cx) };
             if result.is_pending() {
@@ -152,12 +154,11 @@ impl Task {
                 // `| !MUTED | !NOTIFIED | !DROPPED |` if the task hasn't been waked during the
                 // previous polling.
                 'cas: loop {
-                    match unsafe {
-                        task.as_ref().status.compare_exchange_weak(Self::MUTED, 0, SeqCst, Relaxed)
-                    } {
+                    match status.compare_exchange_weak(Self::MUTED, 0, SeqCst, Relaxed) {
                         Ok(_) => break 'outer,
-                        Err(prev) => if prev & Self::NOTIFIED != 0 { break 'cas; },
-                    }
+                        Err(val) => if val != Self::MUTED { break 'cas; },
+                        // if it is `Self::MUTED`, retry
+                    };
                 };
             } else {
                 // Drop the task.
