@@ -72,4 +72,9 @@ impl RuntimeAPI for MTRuntime {
     type BatchGuard = BatchGuard;
     unsafe fn batch_guard() -> Self::BatchGuard { BatchGuard::new() }
     unsafe fn push_batch(batch_guard: &BatchGuard) { batch_guard.push_batch(); }
+
+    #[inline]
+    fn rng_gen() -> u32 {
+        Worker::get().rng_gen()
+    }
 }

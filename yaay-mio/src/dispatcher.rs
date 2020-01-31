@@ -1,127 +1,137 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::NonNull;
+use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::task::{Context, Poll, Waker};
 
-use crate::mem::{do_drop, do_new};
-use crate::shared::SharedData;
+use mio::Ready;
 
-pub(crate) struct RWDispatcher {
-    readable_dispatchers: Vec<*mut AtomicDispatcherInner>,
-    writable_dispatchers: Vec<*mut AtomicDispatcherInner>,
+use crate::helper::{do_drop, do_new, WakerFuture};
+use crate::shared::LocalData;
+
+pub struct Dispatcher {
+    inner: *mut DispatcherInner,
 }
 
-impl RWDispatcher {
-    #[inline]
-    pub(crate) fn new() -> Self {
-        Self {
-            readable_dispatchers: Vec::new(),
-            writable_dispatchers: Vec::new(),
-        }
+unsafe impl Send for Dispatcher {}
+
+unsafe impl Sync for Dispatcher {}
+
+impl Dispatcher {
+    const MUTED: u8 = 1;
+    const NOTIFIED: u8 = Self::MUTED << 1;
+
+    pub(crate) unsafe fn set(&mut self, that: &Dispatcher) {
+        self.inner = that.inner;
     }
 
-    #[inline]
-    pub(crate) fn dispatch_readable(&self) {
-        self.readable_dispatchers.iter().for_each(|dispatcher| unsafe {
-            (**dispatcher).notify();
-        });
-    }
+    pub(crate) unsafe fn null() -> Self { Self { inner: null_mut() } }
 
-    #[inline]
-    pub(crate) fn dispatch_writable(&self) {
-        self.writable_dispatchers.iter().for_each(|dispatcher| unsafe {
-            (**dispatcher).notify();
-        });
-    }
-}
+    pub(crate) fn is_null(&self) -> bool { self.inner.is_null() }
 
-pub(crate) struct AtomicDispatcher {
-    inner: *mut AtomicDispatcherInner,
-}
+    unsafe fn new_from_waker(local_i: usize, key: usize, ready: Ready, waker: Waker) -> Self {
+        let inner = do_new(DispatcherInner::new(waker)).unwrap().as_ptr();
+        let dispatcher = Self { inner };
 
-unsafe impl Send for AtomicDispatcher {}
-
-unsafe impl Sync for AtomicDispatcher {}
-
-impl AtomicDispatcher {
-    pub(crate) async unsafe fn new(key: usize, is_readable: bool) -> Self {
-        struct RFuture();
-
-        impl Future for RFuture {
-            type Output = Waker;
-
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                Poll::Ready(cx.waker().clone())
-            }
-        }
-
-        let inner = do_new(AtomicDispatcherInner::new(RFuture().await)).unwrap().as_ptr();
-
-        let shared = SharedData::get();
-        if is_readable {
-            let mut guard = shared.dispatchers.lock();
-            guard.get_unchecked_mut(key).readable_dispatchers.push(inner);
-        } else {
-            let mut guard = shared.dispatchers.lock();
-            guard.get_unchecked_mut(key).writable_dispatchers.push(inner);
-        };
-
-        Self { inner }
-    }
-
-    pub(crate) unsafe fn del(&self, key: usize) {
-        let shared = SharedData::get();
-        let mut guard = shared.dispatchers.lock();
+        let local = LocalData::get_i(local_i);
+        let mut guard = local.dispatchers.lock();
         let slot = guard.get_unchecked_mut(key);
-        let len = slot.readable_dispatchers.len();
-        slot.readable_dispatchers.retain(|x| *x != self.inner);
-        if slot.readable_dispatchers.len() == len {
-            slot.writable_dispatchers.retain(|x| *x != self.inner);
+        if ready.is_readable() {
+            assert!(slot.readable_dispatcher.is_null());
+            slot.readable_dispatcher.set(&dispatcher);
+        } else if ready.is_writable() {
+            assert!(slot.writable_dispatcher.is_null());
+            slot.writable_dispatcher.set(&dispatcher);
+        } else {
+            unreachable!();
         };
         drop(guard);
+
+        dispatcher
+    }
+
+    pub(crate) async unsafe fn new(local_i: usize, key: usize, ready: Ready) -> Self {
+        let waker = WakerFuture().await;
+        Self::new_from_waker(local_i, key, ready, waker)
+    }
+
+    pub(crate) unsafe fn del(&self, local_i: usize, key: usize) {
+        let local = LocalData::get_i(local_i);
+        let mut guard = local.dispatchers.lock();
+        let slot = guard.get_unchecked_mut(key);
+        if slot.readable_dispatcher.inner == self.inner {
+            slot.readable_dispatcher.set(&Dispatcher::null());
+        } else if slot.writable_dispatcher.inner == self.inner {
+            slot.writable_dispatcher.set(&Dispatcher::null());
+        } else {
+            unreachable!();
+        };
+        drop(guard);
+
         do_drop(NonNull::new_unchecked(self.inner));
     }
 
     #[inline]
     pub(crate) fn prepare_io(&self) {
-        unsafe { (*self.inner).status.swap(AtomicDispatcherInner::MUTED, SeqCst) };
+        unsafe { (*self.inner).status.swap(Dispatcher::MUTED, SeqCst) };
     }
 
     #[inline]
-    pub(crate) fn try_wait_io(&self) -> bool {
-        let status = unsafe { &(*self.inner).status };
+    pub(crate) fn status_ref(&self) -> &AtomicU8 {
+        unsafe { &(*self.inner).status }
+    }
+
+    #[inline]
+    pub(crate) async fn wait_io(&self) {
+        let status = self.status_ref();
         loop {
-            match status.compare_exchange_weak(AtomicDispatcherInner::MUTED, 0, SeqCst, Relaxed) {
-                Ok(_) => {
-                    return true;
-                }
+            match status.compare_exchange_weak(Dispatcher::MUTED, 0, SeqCst, Relaxed) {
+                Ok(_) => return,
                 Err(val) => {
-                    if val != AtomicDispatcherInner::MUTED {
-                        return false;
+                    if val != Dispatcher::MUTED {
+                        PendingOnce(true).await;
                     };
                 }
-            }
-        }
+            };
+        };
+    }
+
+    #[inline]
+    pub(crate) fn notify(&self) {
+        unsafe {
+            let prev = (*self.inner).status.swap(Dispatcher::NOTIFIED | Dispatcher::MUTED, SeqCst);
+            if prev & Dispatcher::MUTED == 0 && prev & Dispatcher::NOTIFIED == 0 {
+                (*self.inner).waker.wake_by_ref();
+            };
+        };
     }
 }
 
-struct AtomicDispatcherInner {
+pub(crate) struct DispatcherInner {
     status: AtomicU8,
     waker: Waker,
 }
 
-impl AtomicDispatcherInner {
-    const MUTED: u8 = 1;
-    const NOTIFIED: u8 = Self::MUTED << 1;
-
+impl DispatcherInner {
     #[inline]
-    fn new(waker: Waker) -> Self { Self { status: AtomicU8::new(Self::MUTED), waker } }
+    fn new(waker: Waker) -> Self {
+        Self { status: AtomicU8::new(Dispatcher::MUTED), waker }
+    }
+}
 
-    #[inline]
-    fn notify(&self) {
-        let prev = self.status.swap(Self::NOTIFIED | Self::MUTED, SeqCst);
-        if prev & Self::MUTED == 0 && prev & Self::NOTIFIED == 0 { self.waker.wake_by_ref(); };
+pub(crate) struct PendingOnce(bool);
+
+impl Future for PendingOnce {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut_self = unsafe { self.get_unchecked_mut() };
+        if mut_self.0 {
+            mut_self.0 = false;
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 }

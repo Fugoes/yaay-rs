@@ -5,15 +5,13 @@ macro_rules! io_poll {
             $dispatcher.prepare_io();
             match $io {
                 Ok(res) => {
-                    return std::task::Poll::Ready(Ok($map(res)));
+                    return Ok($map(res));
                 }
                 Err(err) => {
                     if err.kind() == std::io::ErrorKind::WouldBlock {
-                        if $dispatcher.try_wait_io() {
-                            return std::task::Poll::Pending;
-                        };
+                        $dispatcher.wait_io().await;
                     } else {
-                        return std::task::Poll::Ready(Err(err));
+                        return Err(err);
                     };
                 }
             };
@@ -25,15 +23,13 @@ macro_rules! io_poll {
             $dispatcher.prepare_io();
             match $io {
                 Ok(res) => {
-                    return std::task::Poll::Ready(Ok(res));
+                    return Ok(res);
                 }
                 Err(err) => {
                     if err.kind() == std::io::ErrorKind::WouldBlock {
-                        if $dispatcher.try_wait_io() {
-                            return std::task::Poll::Pending;
-                        };
+                        $dispatcher.wait_io().await;
                     } else {
-                        return std::task::Poll::Ready(Err(err));
+                        return Err(err);
                     };
                 }
             };

@@ -20,4 +20,6 @@ pub trait RuntimeAPI {
     type BatchGuard;
     unsafe fn batch_guard() -> Self::BatchGuard;
     unsafe fn push_batch(batch_guard: &Self::BatchGuard);
+
+    fn rng_gen() -> u32;
 }

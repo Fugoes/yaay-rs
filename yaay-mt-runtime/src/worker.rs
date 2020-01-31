@@ -163,6 +163,13 @@ impl Worker {
             if self.private.shutdown.load(Relaxed) { return; };
         }
     }
+
+    #[inline]
+    pub(crate) fn rng_gen(&mut self) -> u32 {
+        let seed = self.private.seed;
+        self.private.seed = next_seed(seed);
+        seed
+    }
 }
 
 impl Worker {

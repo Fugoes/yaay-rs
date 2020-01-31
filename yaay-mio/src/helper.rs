@@ -1,5 +1,8 @@
 use std::alloc::{alloc, dealloc, Layout};
+use std::future::Future;
+use std::pin::Pin;
 use std::ptr::{drop_in_place, NonNull};
+use std::task::{Context, Poll, Waker};
 
 /// Alloc a non null pointer of type `T` and write `data` to it. Should be used with `do_drop<T>`
 /// in pair, or with `do_drop_in_place<T>` and then `do_dealloc<T>` in pair.
@@ -38,4 +41,14 @@ pub(crate) unsafe fn do_dealloc<T>(ptr: NonNull<T>) {
 #[inline]
 pub(crate) unsafe fn do_drop_in_place<T>(ptr: NonNull<T>) {
     drop_in_place(ptr.as_ptr());
+}
+
+pub(crate) struct WakerFuture();
+
+impl Future for WakerFuture {
+    type Output = Waker;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(cx.waker().clone())
+    }
 }
