@@ -29,3 +29,11 @@ path = "src/spawn_defer_bench.rs"
 [[bin]]
 name = "tokio_ping_pong"
 path = "src/tokio_ping_pong.rs"
+
+[[bin]]
+name = "mio_empty"
+path = "src/mio_empty.rs"
+
+[[bin]]
+name = "tokio_empty"
+path = "src/tokio_empty.rs"

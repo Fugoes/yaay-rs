@@ -74,7 +74,7 @@ impl Dispatcher {
 
     #[inline]
     pub(crate) fn prepare_io(&self) {
-        unsafe { (*self.inner).status.swap(Dispatcher::MUTED, SeqCst) };
+        self.status_ref().swap(Dispatcher::MUTED, SeqCst);
     }
 
     #[inline]
@@ -87,10 +87,12 @@ impl Dispatcher {
         let status = self.status_ref();
         loop {
             match status.compare_exchange_weak(Dispatcher::MUTED, 0, SeqCst, Relaxed) {
-                Ok(_) => return,
+                Ok(_) => {
+                    PendingOnce(true).await;
+                }
                 Err(val) => {
                     if val != Dispatcher::MUTED {
-                        PendingOnce(true).await;
+                        return;
                     };
                 }
             };
@@ -125,6 +127,7 @@ pub(crate) struct PendingOnce(bool);
 impl Future for PendingOnce {
     type Output = ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut_self = unsafe { self.get_unchecked_mut() };
         if mut_self.0 {

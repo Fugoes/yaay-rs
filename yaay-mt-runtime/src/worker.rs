@@ -1,9 +1,9 @@
-use std::cell::Cell;
+
 use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool};
 use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Context, Poll};
 
@@ -11,7 +11,7 @@ use crate::epoch::Epoch;
 use crate::rng::{next_seed, seed_from_system_time};
 use crate::shared::{get_local, set_local};
 use crate::task::Task;
-use crate::task_list::{SyncTaskList, TaskList};
+use crate::task_list::{SyncTaskList};
 
 /// Runtime worker. Each runtime threads' worker is stored in a thread local variable.
 pub(crate) struct Worker {
@@ -44,9 +44,6 @@ struct Private {
     epoch: NonNull<Epoch>,
     /// Pointers to other workers.
     other_workers: Box<[NonNull<Worker>]>,
-    /// Store locally generated defer tasks. When done polling a task, the worker thread should
-    /// check its `defer_list`, if it is not empty, push them in batch to local queue.
-    defer_list: Cell<TaskList>,
     /// Shutdown indicator.
     shutdown: AtomicBool,
     /// Worker id.
@@ -59,19 +56,10 @@ impl Worker {
                       other_workers: Box<[NonNull<Worker>]>) -> Self {
         let task_list = SyncTaskList::new();
         let seed = seed_from_system_time();
-        let defer_list = Cell::new(TaskList::new());
         let shutdown = AtomicBool::new(false);
 
         let shared = Shared { task_list };
-        let private = Private {
-            seed,
-            n_workers,
-            epoch,
-            other_workers,
-            defer_list,
-            shutdown,
-            worker_id,
-        };
+        let private = Private { seed, n_workers, epoch, other_workers, shutdown, worker_id };
 
         Self { shared, private }
     }
@@ -84,10 +72,10 @@ impl Worker {
     #[inline]
     pub(crate) fn get<'a>() -> &'a mut Worker { unsafe { &mut *get_local() } }
 
-    /// Push a task to the defer list of the worker.
+    /// Push a task to the local list of the worker.
     #[inline]
     pub(crate) fn defer(&mut self, task: NonNull<Task>) {
-        self.private.defer_list.get_mut().push_front(task);
+        self.shared.task_list.lock().push_front(task);
     }
 
     /// Push a task to a local queue.
@@ -133,10 +121,12 @@ impl Worker {
             let task = 'task: loop {
                 if Epoch::active_count(old_status) != 0 {
                     // try steal task
-                    let task = self.try_steal();
-                    match task {
-                        Some(task) => break 'task task,
-                        None => (),
+                    for _ in 0..(16 * self.private.n_workers) {
+                        let task = self.try_steal();
+                        match task {
+                            Some(task) => break 'task task,
+                            None => (),
+                        };
                     };
                 } else {
                     // try wait_next_epoch
@@ -177,11 +167,6 @@ impl Worker {
     #[inline]
     fn poll_task(&mut self, task: NonNull<Task>) {
         Task::poll(task);
-        if !self.private.defer_list.get_mut().is_empty() {
-            let tasks = self.private.defer_list.get_mut().pop_all();
-            self.shared.task_list.lock().push_front_batch(tasks);
-            // no need to call `next_epoch()` here
-        };
     }
 
     /// Try steal a task from a random victim. The victim is selected by the `seed`. The seed would

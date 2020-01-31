@@ -6,6 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
 
 static COUNT: AtomicU32 = AtomicU32::new(0);
+static N: u32 = 10000;
 
 fn main() {
     let mut rt = tokio::runtime::Builder::new()
@@ -19,10 +20,10 @@ fn main() {
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::bind("127.0.0.1:11451").await.unwrap();
-    for _ in 0..2000 {
+    for _ in 0..N {
         tokio::spawn(pong());
     };
-    for _ in 0..2000 {
+    for _ in 0..N {
         let (socket, _) = listener.accept().await.unwrap();
         tokio::spawn(ping(socket));
     };
@@ -31,21 +32,21 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn ping(mut socket: TcpStream) {
-    let msg = "ping".as_bytes();
-    let mut buf = [0; 4];
+    let msg = [0 as u8; 1];
+    let mut buf = [0 as u8; 1];
     loop {
-        let _ = socket.write(msg).await.unwrap();
+        let _ = socket.write_all(&msg).await.unwrap();
         let _ = socket.read_exact(&mut buf).await.unwrap();
-        if COUNT.fetch_add(1, SeqCst) == 10000000 { exit(0) };
+        if COUNT.fetch_add(1, SeqCst) == 1000 * N { exit(0) };
     };
 }
 
 async fn pong() {
     let mut stream = TcpStream::connect("127.0.0.1:11451").await.unwrap();
-    let msg = "pong".as_bytes();
-    let mut buf = [0; 4];
+    let msg = [0 as u8; 1];
+    let mut buf = [0 as u8; 1];
     loop {
         let _ = stream.read_exact(&mut buf).await.unwrap();
-        let _ = stream.write(msg).await.unwrap();
+        let _ = stream.write_all(&msg).await.unwrap();
     };
 }

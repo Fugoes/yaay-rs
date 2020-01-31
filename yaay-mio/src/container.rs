@@ -80,7 +80,8 @@ impl<T> MIOHandle<T> where T: mio::Evented + Send {
         let local_i = global.counter.fetch_add(1, SeqCst) % global.locals.len();
         let local = LocalData::get_i(local_i);
         let key = local.dispatchers.lock().insert(Slot::new());
-        local.poll.register(&t, Token(key), Ready::writable(), PollOpt::edge()).unwrap();
+        local.poll.register(&t, Token(key), Ready::readable() | Ready::writable(), PollOpt::edge())
+            .unwrap();
 
         let inner = Arc::new(MIOCell { local_i, key, inner: UnsafeCell::new(t) });
 

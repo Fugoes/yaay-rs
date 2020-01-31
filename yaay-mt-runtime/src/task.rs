@@ -116,7 +116,7 @@ impl Task {
         // If previous status is `| MUTED | _ | _ |` or `| _ | _ | DROPPED |, do nothing.
         if prev & (Self::MUTED | Self::DROPPED) != 0 { return; };
         // Previous status could not be `| !MUTED | NOTIFIED | !DROPPED |`.
-        assert_ne!(prev, Self::NOTIFIED);
+        // assert_ne!(prev, Self::NOTIFIED);
         // Now previous should be `| !MUTED | !NOTIFIED | !DROPPED |`, we need to schedule it to a
         // local queue.
         let worker_id = Task::get_worker_id(task) as usize;
@@ -151,10 +151,13 @@ impl Task {
                 // We expect the status is still `| MUTED | !NOTIFIED | !DROPPED |`. Set status to
                 // `| !MUTED | !NOTIFIED | !DROPPED |` if the task hasn't been waked during the
                 // previous polling.
-                loop {
-                    let (succ, prev) = Self::try_change_status(task, Self::MUTED, 0);
-                    if succ { break 'outer; }; // return
-                    if prev & Self::NOTIFIED != 0 { break; }; // repoll
+                'cas: loop {
+                    match unsafe {
+                        task.as_ref().status.compare_exchange_weak(Self::MUTED, 0, SeqCst, Relaxed)
+                    } {
+                        Ok(_) => break 'outer,
+                        Err(prev) => if prev & Self::NOTIFIED != 0 { break 'cas; },
+                    }
                 };
             } else {
                 // Drop the task.
@@ -177,16 +180,6 @@ impl Task {
         if prev & Self::DROPPED == 0 {
             unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
         };
-    }
-}
-
-impl Task {
-    #[inline]
-    fn try_change_status(task: NonNull<Task>, current: u8, new: u8) -> (bool, u8) {
-        match unsafe { task.as_ref().status.compare_exchange_weak(current, new, SeqCst, Relaxed) } {
-            Ok(x) => (true, x),
-            Err(x) => (false, x),
-        }
     }
 }
 

@@ -83,6 +83,7 @@ impl GlobalData {
                     .name(format!("yaay-mio-{}", tid))
                     .spawn(move || unsafe {
                         let ptr = LocalData::build();
+                        LOCAL.with(|x| x.store(ptr.as_ptr(), Relaxed));
                         let mut guard = ptrs.lock();
                         guard[tid] = ptr.as_ptr() as usize;
                         while !guard.iter().all(|x| !(*x as *const ()).is_null()) {
@@ -96,11 +97,12 @@ impl GlobalData {
                         let batch = RT::batch_guard();
                         let local = LocalData::get();
                         let mut poll_events = mio::Events::with_capacity(1024);
-                        let timeout = Some(Duration::from_millis(1000));
+                        let timeout = Some(Duration::from_millis(1000 + (tid as u64) * 10));
                         while !SHUTDOWN.load(Acquire) {
-                            let n = local.poll.poll(&mut poll_events, timeout);
+                            let _n = local.poll.poll(&mut poll_events, timeout);
                             let guard = local.dispatchers.lock();
-                            for poll_event in poll_events.iter() {
+                            for (_k, poll_event) in poll_events.iter().enumerate() {
+                                // if (k + 1) % 32 == 0 { RT::push_batch(&batch) };
                                 let key = poll_event.token().0;
                                 let ready = poll_event.readiness();
                                 let slot = guard.get_unchecked(key);
@@ -112,7 +114,7 @@ impl GlobalData {
                                 };
                             };
                             drop(guard);
-                            n.map(|x| if x > 0 { RT::push_batch(&batch) }).unwrap();
+                            RT::push_batch(&batch);
                             'outer: loop {
                                 let key = local.deferred_remove.lock().pop();
                                 match key {
