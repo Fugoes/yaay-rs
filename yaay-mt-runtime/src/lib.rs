@@ -7,6 +7,6 @@ mod task;
 mod task_list;
 mod task_waker;
 mod epoch;
-mod static_var;
+mod shared;
 mod worker;
 mod worker_manager;

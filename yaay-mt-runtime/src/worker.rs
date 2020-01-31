@@ -9,7 +9,7 @@ use std::task::{Context, Poll};
 
 use crate::epoch::Epoch;
 use crate::rng::{next_seed, seed_from_system_time};
-use crate::static_var::{get_local, set_local};
+use crate::shared::{get_local, set_local};
 use crate::task::Task;
 use crate::task_list::{SyncTaskList, TaskList};
 

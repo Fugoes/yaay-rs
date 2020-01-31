@@ -3,12 +3,12 @@ use std::future::Future;
 use std::mem::forget;
 use std::pin::Pin;
 use std::ptr::{NonNull, null_mut};
-use std::sync::atomic::{AtomicU8, AtomicUsize, spin_loop_hint};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
+use std::sync::atomic::{AtomicU8, AtomicUsize};
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::task::{Context, Poll};
 
 use crate::mem::{do_dealloc, do_drop_in_place, do_new};
-use crate::static_var::get_local;
+use crate::shared::get_local;
 use crate::task_list::TaskList;
 use crate::task_waker::task_waker_from;
 use crate::worker_manager::RuntimeSharedData;
@@ -22,7 +22,7 @@ use crate::worker_manager::RuntimeSharedData;
 pub(crate) struct Task {
     /// C++ style dynamic dispatch.
     vtable: &'static TaskVTable,
-    /// One of `BLOCKED`, `SCHEDULED`, `RUNNING`, `DROPPED`.
+    /// Status of the task. Include 3 bits, namely `MUTED`, `NOTIFIED`, and `DROPPED`.
     status: AtomicU8,
     /// Reference count. When a waker is created from the task, the task's `rc` would be increased
     /// by 1, when the waker is dropped, the task's `rc` would be decreased by 1. The initial `rc`
@@ -39,17 +39,17 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    const STATUS_BLOCKED: u8 = 0;
-    const STATUS_SCHEDULED: u8 = 1;
-    const STATUS_RUNNING: u8 = 2;
-    const STATUS_DROPPED: u8 = 3;
+    const MUTED: u8 = 1;
+    const NOTIFIED: u8 = Self::MUTED << 1;
+    const DROPPED: u8 = Self::NOTIFIED << 1;
 
-    /// Alloc and initialize a new `NonNull<Task>` which contains the `future`.
+    /// Alloc and initialize a new `NonNull<Task>` which contains the `future`. It is set to
+    /// `| MUTED | !NOTIFIED | !DROPPED |` status.
     #[inline]
     pub(crate) unsafe fn new<T>(future: T) -> NonNull<Task> where T: Future<Output=()> + Send {
         let task = Task {
             vtable: vtable_of::<T>(),
-            status: AtomicU8::new(Self::STATUS_BLOCKED),
+            status: AtomicU8::new(Self::MUTED),
             rc: AtomicUsize::new(1),
             next: null_mut(),
             worker_id: 0,
@@ -108,84 +108,60 @@ impl Task {
 
     /// Atomically wake up the task. Guarantee the task would be polled again eventually, though
     /// multiple invocations of `wake()` might share one `poll()` invocation. Guarantee dropped
-    /// tasks won't be scheduled. All possible state transition in this function are:
-    /// - `BLOCKED` to `SCHEDULED`: then schedule the task.
-    /// - `RUNNING` to `SCHEDULED`: do nothing, since the `Task::poll_with()` method would recheck
-    ///   the status after each poll until it is `BLOCKED`.
-    /// - `SCHEDULED` to `SCHEDULED`: do nothing, since the task has already been scheduled.
-    /// If the task is `DROPPED`, do nothing.
+    /// tasks won't be scheduled again.
     #[inline]
     pub(crate) fn wake(task: NonNull<Task>) {
-        let mut status = Self::get_status(task);
-        loop {
-            if status == Self::STATUS_DROPPED { return; };
-            let (succ, prev) = Self::try_change_status(task, status, Self::STATUS_SCHEDULED);
-            if succ {
-                if prev == Self::STATUS_BLOCKED { // `BLOCKED` to `SCHEDULED`
-                    let worker_id = Task::get_worker_id(task) as usize;
-                    match RuntimeLocalData::get() {
-                        Some(local) => {
-                            let task_lists = local.task_lists.get_mut();
-                            let task_list = unsafe { task_lists.get_unchecked_mut(worker_id) };
-                            task_list.push_back(task);
-                        }
-                        None => {
-                            let shared = RuntimeSharedData::get();
-                            let worker = unsafe { shared.worker_ptrs.get_unchecked(worker_id) };
-                            unsafe { worker.as_ref().task_list.lock().push_back(task) };
-                            unsafe { shared.epoch.as_ref().next_epoch() };
-                        }
-                    };
-                };
-                // `RUNNING` to `SCHEDULED`: do nothing
-                // `SCHEDULED` to `SCHEDULED`: do nothing
-                return;
-            } else {
-                status = prev;
-                spin_loop_hint();
-            };
+        // Unconditionally set the `MUTED` bit and the `NOTIFIED` bit.
+        let prev = unsafe { task.as_ref().status.fetch_or(Self::MUTED | Self::NOTIFIED, SeqCst) };
+        // If previous status is `| MUTED | _ | _ |` or `| _ | _ | DROPPED |, do nothing.
+        if prev & (Self::MUTED | Self::DROPPED) != 0 { return; };
+        // Previous status could not be `| !MUTED | NOTIFIED | !DROPPED |`.
+        assert_ne!(prev, Self::NOTIFIED);
+        // Now previous should be `| !MUTED | !NOTIFIED | !DROPPED |`, we need to schedule it to a
+        // local queue.
+        let worker_id = Task::get_worker_id(task) as usize;
+        match RuntimeLocalData::get() {
+            Some(local) => {
+                let task_lists = local.task_lists.get_mut();
+                let task_list = unsafe { task_lists.get_unchecked_mut(worker_id) };
+                task_list.push_back(task);
+            }
+            None => {
+                let shared = RuntimeSharedData::get();
+                let worker = unsafe { shared.worker_ptrs.get_unchecked(worker_id) };
+                unsafe { worker.as_ref().task_list.lock().push_back(task) };
+                unsafe { shared.epoch.as_ref().next_epoch() };
+            }
         };
     }
 
     /// Dispatched to `TaskVTable.fn_poll`. Shall only be called from one thread at the same time.
     /// All possible state transition in this function are:
-    /// - `SCHEDULED` to `BLOCKED`: the task is polled to `Pending`.
-    /// - `SCHEDULED` to `DROPPED`: the task is polled to `Ready`.
-    /// If the task is `DROPPED`, do nothing. When ever returning from the inner poll function of
-    /// the task, the task's status is `SCHEDULED`, this function would repoll it.
     #[inline]
     pub(crate) fn poll(task: NonNull<Task>) {
-        let status = Self::get_status(task);
-        if status == Self::STATUS_DROPPED { return; };
-        Self::swap_status(task, Self::STATUS_RUNNING);
-
+        // After the task is pushed to the queue, its status is `| MUTED | NOTIFIED | !DROPPED |`.
         let waker = unsafe { task_waker_from(task) };
         let mut cx = Context::from_waker(&waker);
         'outer: loop {
+            // Unset the `NOTIFIED` bit, in case during the polling, new wake up events happen.
+            unsafe { task.as_ref().status.fetch_and(!Self::NOTIFIED, SeqCst) };
+            // Now its status is `| MUTED | !NOTIFIED | !DROPPED |`.
             let result = unsafe { (task.as_ref().vtable.fn_poll)(task, &mut cx) };
             if result.is_pending() {
-                let mut status = Self::STATUS_RUNNING;
+                // We expect the status is still `| MUTED | !NOTIFIED | !DROPPED |`. Set status to
+                // `| !MUTED | !NOTIFIED | !DROPPED |` if the task hasn't been waked during the
+                // previous polling.
                 loop {
-                    let (succ, prev) =
-                        if status == Self::STATUS_RUNNING {
-                            Self::try_change_status(task, status, Self::STATUS_BLOCKED)
-                        } else { // status == Self::STATUS_SCHEDULED
-                            Self::try_change_status(task, status, Self::STATUS_RUNNING)
-                        };
-                    if succ {
-                        if prev == Self::STATUS_RUNNING {
-                            break 'outer; // return
-                        } else { // prev == Self::STATUS_SCHEDULED
-                            break; // repoll
-                        };
-                    } else {
-                        status = prev;
-                        spin_loop_hint();
-                    };
+                    let (succ, prev) = Self::try_change_status(task, Self::MUTED, 0);
+                    if succ { break 'outer; }; // return
+                    if prev & Self::NOTIFIED != 0 { break; }; // repoll
                 };
             } else {
-                Self::swap_status(task, Self::STATUS_DROPPED);
+                // Drop the task.
+                unsafe { task.as_ref().status.fetch_or(Self::DROPPED, SeqCst) };
                 unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
+                // The task might still have references from wakers. The memory deallocation would
+                // be delayed to these wakers' `drop()`.
                 Self::rc_dec(task);
                 break 'outer;
             };
@@ -197,9 +173,8 @@ impl Task {
     /// multiple threads concurrently.
     #[inline]
     pub(crate) fn drop_in_place(task: NonNull<Task>) {
-        let status = Self::swap_status(task, Self::STATUS_DROPPED);
-        assert_ne!(status, Self::STATUS_RUNNING);
-        if status != Self::STATUS_DROPPED {
+        let prev = unsafe { task.as_ref().status.fetch_or(Self::DROPPED, SeqCst) };
+        if prev & Self::DROPPED == 0 {
             unsafe { (task.as_ref().vtable.fn_drop_in_place)(task) };
         };
     }
@@ -212,16 +187,6 @@ impl Task {
             Ok(x) => (true, x),
             Err(x) => (false, x),
         }
-    }
-
-    #[inline]
-    fn get_status(task: NonNull<Task>) -> u8 {
-        unsafe { task.as_ref().status.load(Acquire) }
-    }
-
-    #[inline]
-    fn swap_status(task: NonNull<Task>, to: u8) -> u8 {
-        unsafe { task.as_ref().status.swap(to, SeqCst) }
     }
 }
 

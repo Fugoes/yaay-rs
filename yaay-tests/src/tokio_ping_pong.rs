@@ -18,7 +18,7 @@ fn main() {
 }
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    let mut listener = TcpListener::bind("127.0.0.1:11451").await.unwrap();
     for _ in 0..2000 {
         tokio::spawn(pong());
     };
@@ -41,7 +41,7 @@ async fn ping(mut socket: TcpStream) {
 }
 
 async fn pong() {
-    let mut stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let mut stream = TcpStream::connect("127.0.0.1:11451").await.unwrap();
     let msg = "pong".as_bytes();
     let mut buf = [0; 4];
     loop {

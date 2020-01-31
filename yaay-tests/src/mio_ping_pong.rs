@@ -19,7 +19,7 @@ fn main() {
 }
 
 async fn ping_pong_async_main() {
-    let listener = TcpListener::bind(&"127.0.0.1:23333".parse().unwrap()).unwrap();
+    let listener = TcpListener::bind(&"127.0.0.1:11451".parse().unwrap()).unwrap();
     let acceptor = listener.acceptor().await;
 
     for _ in 0..2000 {
@@ -46,7 +46,7 @@ async fn ping(stream: TcpStream) {
 }
 
 async fn pong() {
-    let connector = TcpStream::connect(&"127.0.0.1:23333".parse().unwrap()).unwrap();
+    let connector = TcpStream::connect(&"127.0.0.1:11451".parse().unwrap()).unwrap();
     let reader = connector.reader().await;
     let writer = connector.writer().await;
 

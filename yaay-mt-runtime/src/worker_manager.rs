@@ -7,7 +7,7 @@ use parking_lot::{Condvar, Mutex};
 
 use crate::epoch::Epoch;
 use crate::mem::{do_alloc, do_drop, do_new};
-use crate::static_var::{get_global, set_global};
+use crate::shared::{get_global, set_global};
 use crate::task::Task;
 use crate::task_list::TaskList;
 use crate::worker::Worker;

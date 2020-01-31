@@ -1,7 +1,7 @@
 use std::ptr::{NonNull, null_mut};
 
 use crate::mem::{do_drop, do_new};
-use crate::static_var::{get_local, set_local};
+use crate::shared::{get_local, set_local};
 use crate::task::RuntimeLocalData;
 use crate::worker_manager::RuntimeSharedData;
 

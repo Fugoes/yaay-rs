@@ -37,7 +37,7 @@ pub unsafe fn mio_spawn_event_loop<runtime: RuntimeAPI>() -> JoinHandle<()> {
                 let batch_guard = runtime::batch_guard();
                 let duration = Some(Duration::from_micros(500));
                 let shared = SharedData::get();
-                let mut poll_events = mio::Events::with_capacity(64);
+                let mut poll_events = mio::Events::with_capacity(128);
                 while !SHUTDOWN.load(Acquire) {
                     let n = shared.poll.poll(&mut poll_events, duration).unwrap();
                     for poll_event in poll_events.iter() {
