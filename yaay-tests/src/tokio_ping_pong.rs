@@ -31,7 +31,7 @@ async fn async_main(addr: Arc<SocketAddr>) -> Result<(), Box<dyn std::error::Err
     for _ in 0..N {
         tokio::spawn(pong(addr.clone()));
     };
-    for i in 0..N {
+    for _i in 0..N {
         let (socket, _) = listener.accept().await.unwrap();
         tokio::spawn(ping(socket));
     };
@@ -67,7 +67,7 @@ struct Block();
 impl Future for Block {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
     }
 }

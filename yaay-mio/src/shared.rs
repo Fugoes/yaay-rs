@@ -3,14 +3,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 use slab::Slab;
 
 use yaay_runtime_api::RuntimeAPI;
 
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::DispatcherInner;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
@@ -25,8 +25,8 @@ unsafe impl Send for LocalData {}
 unsafe impl Sync for LocalData {}
 
 pub(crate) struct Slot {
-    pub(crate) readable_dispatcher: Dispatcher,
-    pub(crate) writable_dispatcher: Dispatcher,
+    pub(crate) readable_dispatcher: *mut DispatcherInner,
+    pub(crate) writable_dispatcher: *mut DispatcherInner,
 }
 
 pub(crate) struct GlobalData {
@@ -56,10 +56,7 @@ impl LocalData {
 
 impl Slot {
     pub(crate) fn new() -> Self {
-        Self {
-            readable_dispatcher: unsafe { Dispatcher::null() },
-            writable_dispatcher: unsafe { Dispatcher::null() },
-        }
+        Self { readable_dispatcher: null_mut(), writable_dispatcher: null_mut() }
     }
 }
 
@@ -99,7 +96,7 @@ impl GlobalData {
                         let mut poll_events = mio::Events::with_capacity(1024);
                         let timeout = Some(Duration::from_millis(1000));
                         while !SHUTDOWN.load(Acquire) {
-                            let n = local.poll.poll(&mut poll_events, timeout).unwrap();
+                            let _n = local.poll.poll(&mut poll_events, timeout).unwrap();
                             let guard = local.dispatchers.lock();
                             for (k, poll_event) in poll_events.iter().enumerate() {
                                 if (k + 1) % 128 == 0 { RT::push_batch(&batch) };
@@ -107,10 +104,10 @@ impl GlobalData {
                                 let ready = poll_event.readiness();
                                 let slot = guard.get_unchecked(key);
                                 if ready.is_readable() && !slot.readable_dispatcher.is_null() {
-                                    slot.readable_dispatcher.notify();
+                                    (*slot.readable_dispatcher).notify();
                                 };
                                 if ready.is_writable() && !slot.writable_dispatcher.is_null() {
-                                    slot.writable_dispatcher.notify();
+                                    (*slot.writable_dispatcher).notify();
                                 };
                             };
                             drop(guard);

@@ -9,7 +9,7 @@ fn main() {
     let counter = AtomicU32::new(1);
     let begin = Instant::now();
     loop {
-        let mut guard = mutex.lock();
+        let guard = mutex.lock();
         drop(guard);
         if counter.fetch_add(1, SeqCst) == 0 { break; };
     };

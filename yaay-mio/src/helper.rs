@@ -43,11 +43,13 @@ pub(crate) unsafe fn do_drop_in_place<T>(ptr: NonNull<T>) {
     drop_in_place(ptr.as_ptr());
 }
 
+/// A future that returns current worker's waker.
 pub(crate) struct WakerFuture();
 
 impl Future for WakerFuture {
     type Output = Waker;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(cx.waker().clone())
     }

@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::process::exit;
-use std::str::FromStr;
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::SeqCst;
@@ -31,10 +31,10 @@ fn main() {
 async fn ping_pong_async_main(addr: Arc<SocketAddr>) {
     let mut listener = TcpListenerHandle::bind(addr.as_ref()).unwrap();
     let mut acceptor = listener.acceptor().await;
-    for i in 0..N {
+    for _i in 0..N {
         runtime::spawn(pong(addr.clone()));
     };
-    for i in 0..N {
+    for _i in 0..N {
         let (read_handle, write_handle, _) = acceptor.accept().await.unwrap();
         runtime::spawn(ping(read_handle, write_handle));
     };
@@ -60,7 +60,7 @@ struct Block();
 impl Future for Block {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
     }
 }

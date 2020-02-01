@@ -143,9 +143,9 @@ impl Task {
         let status = unsafe { &task.as_ref().status };
         let waker = unsafe { task_waker_from(task) };
         let mut cx = Context::from_waker(&waker);
+        // Unset the `NOTIFIED` bit, in case during the polling, new wake up events happen.
+        unsafe { task.as_ref().status.fetch_and(!Self::NOTIFIED, SeqCst) };
         'outer: loop {
-            // Unset the `NOTIFIED` bit, in case during the polling, new wake up events happen.
-            let prev = unsafe { task.as_ref().status.fetch_and(!Self::NOTIFIED, SeqCst) };
             // assert!(prev & Self::MUTED != 0);
             // Now its status is `| MUTED | !NOTIFIED | !DROPPED |`.
             let result = unsafe { (task.as_ref().vtable.fn_poll)(task, &mut cx) };
@@ -153,11 +153,20 @@ impl Task {
                 // We expect the status is still `| MUTED | !NOTIFIED | !DROPPED |`. Set status to
                 // `| !MUTED | !NOTIFIED | !DROPPED |` if the task hasn't been waked during the
                 // previous polling.
+                let mut prev = Self::MUTED;
                 'cas: loop {
-                    match status.compare_exchange_weak(Self::MUTED, 0, SeqCst, Relaxed) {
-                        Ok(_) => break 'outer,
-                        Err(val) => if val != Self::MUTED { break 'cas; },
-                        // if it is `Self::MUTED`, retry
+                    if prev == Self::MUTED {
+                        match status.compare_exchange_weak(prev, 0 as u8, SeqCst, Relaxed) {
+                            Ok(_) => break 'outer, // return
+                            Err(val) => prev = val,
+                        };
+                    } else {
+                        assert_eq!(prev, Self::NOTIFIED | Self::MUTED);
+                        // the `NOTIFY` bit is set
+                        match status.compare_exchange_weak(prev, Self::MUTED, SeqCst, Relaxed) {
+                            Ok(_) => break 'cas, // repoll
+                            Err(val) => prev = val,
+                        };
                     };
                 };
             } else {

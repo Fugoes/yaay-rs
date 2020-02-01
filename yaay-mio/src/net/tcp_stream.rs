@@ -39,24 +39,20 @@ impl TcpStreamWriteHandle {
 }
 
 impl<'handle> TcpStreamReader<'handle> {
-    #[inline]
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         io_poll!(self.0.dispatcher, self.0.inner_mut().read(buf));
     }
 
-    #[inline]
     pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
         io_poll!(self.0.dispatcher, self.0.inner_mut().read_exact(buf));
     }
 }
 
 impl<'handle> TcpStreamWriter<'handle> {
-    #[inline]
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize> {
         io_poll!(self.0.dispatcher, self.0.inner_mut().write(buf));
     }
 
-    #[inline]
     pub async fn write_all(&mut self, buf: &[u8]) -> Result<()> {
         io_poll!(self.0.dispatcher, self.0.inner_mut().write_all(buf));
     }
