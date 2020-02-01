@@ -44,7 +44,7 @@ impl Task {
     const DROPPED: u8 = Self::NOTIFIED << 1;
 
     /// Alloc and initialize a new `NonNull<Task>` which contains the `future`. It is set to
-    /// `| MUTED | !NOTIFIED | !DROPPED |` status.
+    /// `| MUTED | NOTIFIED | !DROPPED |` state.
     #[inline]
     pub(crate) unsafe fn new<T>(future: T) -> NonNull<Task> where T: Future<Output=()> + Send {
         let task = Task {
@@ -136,7 +136,6 @@ impl Task {
     }
 
     /// Dispatched to `TaskVTable.fn_poll`. Shall only be called from one thread at the same time.
-    /// All possible state transition in this function are:
     #[inline]
     pub(crate) fn poll(task: NonNull<Task>) {
         // After the task is pushed to the queue, its status is `| MUTED | NOTIFIED | !DROPPED |`.
@@ -161,7 +160,7 @@ impl Task {
                             Err(val) => prev = val,
                         };
                     } else {
-                        assert_eq!(prev, Self::NOTIFIED | Self::MUTED);
+                        // assert_eq!(prev, Self::NOTIFIED | Self::MUTED);
                         // the `NOTIFY` bit is set
                         match status.compare_exchange_weak(prev, Self::MUTED, SeqCst, Relaxed) {
                             Ok(_) => break 'cas, // repoll

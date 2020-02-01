@@ -19,28 +19,28 @@ test spawn_bench ... bench:         330 ns/iter (+/- 84)
 test threaded_scheduler_local_spawn  ... bench:         450 ns/iter (+/- 58)
 test threaded_scheduler_remote_spawn ... bench:         442 ns/iter (+/- 50)
 ```
-Since ours `yaay-rs` involves only 1 memory allocation while `tokio-rs` requires 2 (one for the
+Since this `yaay-rs` involves only 1 memory allocation while `tokio-rs` requires 2 (one for the
 task structure, one for the boxed future), these result are not surprise.
  
 ### ping pong test
-Measure time required to listen on a local address, spawn 1000 tasks to connect to this address
+Measure the time required to listen on a local address, spawn 1000 tasks to connect to this address
 , then for each connection do 10000 ping-pong (write 1 byte, and then read 1 byte for the ping
  side, read 1 byte, and then write 1 byte for the pong side) message exchange. The following results
 are measured on a server with Intel(R) Xeon(R) X5670 (24 threads total).
 
-The benchmark programs are `yaay-tests/src/mio_ping_pong.rs` for ours `yaay-rs`, and
+The benchmark programs are `yaay-tests/src/mio_ping_pong.rs` for this `yaay-rs`, and
 `yaay-tests/src/tokio_ping_pong.rs` for `tokio-rs`. Example usage:
 ```
 time ./target/release/mio_ping_pong 127.0.0.1:12345 8 1
 time ./target/release/tokio_ping_pong 127.0.0.1:12345 8
 ```
-To run these programs, some system limits need to be adjusted (and these programs does not
+To run these programs, some system limits need to be adjusted (and these programs does no
 error handling :)).
 
-Since ours `yaay-rs` use didactic threads for polling IO, we run all benchmark with n worker
-threads and 1 IO polling threads, while run `tokio-rs` with n worker threads. To be more fair, we
-benchmark ours `yaay-rs` both with and without cgroup cpu limit to n threads (n00% CPU). Each setup
-is run for 10 times and take the average. All time unit in seconds.
+Since `yaay-rs` use didactic threads for polling IO, we run all benchmark with n worker
+threads and 1 IO polling thread, while run `tokio-rs` with n worker threads. To be more fair, we
+benchmark the `yaay-rs` both with and without cgroup cpu limit to n threads (n00% CPU). Each setup
+is run for 10 times and take the average. The time unit is seconds.
 ```text
                                     User Time    Sys Time  Total Time        CPU%
                                    ==========  ==========  ==========  ==========
