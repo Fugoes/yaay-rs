@@ -1,12 +1,11 @@
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::process::exit;
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::SeqCst;
-use std::task::Context;
-
-use tokio::macros::support::{Future, Pin, Poll};
+use std::task::{Context, Poll};
 
 use yaay_mio::net::*;
 use yaay_mio::prelude::*;
